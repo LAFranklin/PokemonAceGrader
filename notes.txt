@@ -1,0 +1,7 @@
+How to Run
+
+Run tcgdex_downloader_full.py - this will download all the pokemon data and write it to pokemon_cards_full.csv
+Run ace_playwright_scraper_delta.py - this will download the latest delta from ebay. requires ace_sold_results.csv will write to new file with date and time then update the ace_sold_results.csv
+match_pokemon_to_price.py - will take the 2 files above and create a new file pokemon_ace_mapped_prices.csv will pokemon to ace prices
+aggreagte_ace_pricing.py - will then aggregate the data into a new file pokemon_cards_full_updated 
+Once done we then need to agreegate into the file. 
