@@ -69,8 +69,14 @@ def update_pokemon_cards(cards_path, ace_data, output_path):
             rows.append(row)
 
     # Write updated CSV
+# Write updated CSV
     with open(output_path, "w", newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            f,
+            fieldnames=fieldnames,
+            extrasaction="ignore"
+        )
+
         writer.writeheader()
         writer.writerows(rows)
 
