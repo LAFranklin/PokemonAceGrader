@@ -243,25 +243,34 @@ def insert_rows_to_db(rows):
     conn = get_connection()
     try:
         cursor = conn.cursor()
+
         for r in rows:
-            cursor.execute(
-                """
-                INSERT INTO ace_ebay_sales (
-                    title,
-                    sold_date,
-                    price,
-                    best_offer_accepted,
-                    database_created_at,
-                    database_updated_at
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO ace_ebay_sales (
+                        title,
+                        sold_date,
+                        price,
+                        best_offer_accepted,
+                        database_created_at,
+                        database_updated_at
+                    )
+                    VALUES (?, ?, ?, ?, SYSUTCDATETIME(), SYSUTCDATETIME())
+                    """,
+                    r["title"],
+                    r["sold_date"],
+                    r["price"],
+                    r["best_offer_accepted"],
                 )
-                VALUES (?, ?, ?, ?, SYSUTCDATETIME(), SYSUTCDATETIME())
-                """,
-                r["title"],
-                r["sold_date"],
-                r["price"],
-                r["best_offer_accepted"],
-            )
+
+            except pyodbc.IntegrityError:
+                # Duplicate row — skip and continue
+                print(f"[DUPLICATE] Skipped: {r['title']} | {r['sold_date']} | {r['price']}")
+                continue
+
         conn.commit()
+
     finally:
         conn.close()
 
