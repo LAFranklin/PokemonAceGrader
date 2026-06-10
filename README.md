@@ -106,8 +106,6 @@ The pipeline consists of **three main scripts**, but they run on **two separate 
 - Price  
 - Grade (ACE 8/9/10)  
 - Sold date  
-- Listing URL  
-- Raw title for NLP matching  
 
 ### Features:
 - Delta mode (only new sales)  
@@ -128,7 +126,7 @@ The pipeline consists of **three main scripts**, but they run on **two separate 
 - Cleans ACE titles  
 - Extracts set names + card numbers  
 - Fuzzy matches to TCGdex metadata  
-- Writes matched rows into the **ace_mapped_prices** table  
+- Writes matched rows into the **ace_ebay_sales** table  
 
 ### Output:
 - **Database rows only**  
