@@ -1,10 +1,33 @@
-import csv
 import re
 import requests
+import pyodbc
 from difflib import SequenceMatcher
 
 # -----------------------------
-# CONFIG
+# DB CONFIG
+# -----------------------------
+
+SQL_SERVER = "database-1.cdgee08us4is.eu-west-2.rds.amazonaws.com,1433"
+SQL_DATABASE = "Pokemon"
+SQL_USER = "admin"
+SQL_PASSWORD = "dzz<[kqP~jnBbGI)9e:2xr1e7|rI"  # change this
+
+
+def get_connection():
+    conn_str = (
+        "DRIVER={ODBC Driver 18 for SQL Server};"
+        f"SERVER={SQL_SERVER};"
+        f"DATABASE={SQL_DATABASE};"
+        f"UID={SQL_USER};"
+        f"PWD={SQL_PASSWORD};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str)
+
+
+# -----------------------------
+# MATCHING CONFIG
 # -----------------------------
 
 SETS_API_URL = "https://api.tcgdex.net/v2/en/sets"
@@ -12,7 +35,8 @@ SETS_API_URL = "https://api.tcgdex.net/v2/en/sets"
 ACE_KEYWORDS = ["ace"]
 EXCLUDE_KEYWORDS = ["psa", "bundle", "bundles", "lot", "lots"]
 
-SET_MATCH_THRESHOLD = 0.65  # fuzzy match threshold for set names
+SET_MATCH_THRESHOLD = 0.65
+
 
 # -----------------------------
 # HELPERS
@@ -24,8 +48,9 @@ def normalize(s: str) -> str:
 def fuzzy_ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
 
+
 # -----------------------------
-# TITLE PARSING / FILTERS
+# TITLE PARSING
 # -----------------------------
 
 def is_valid_ace_title(title: str) -> bool:
@@ -43,69 +68,40 @@ def extract_grade(title: str):
     return None
 
 def extract_collector_token(title: str):
-    """
-    Extracts the first part of patterns like:
-    - 077/094
-    - 291/217
-    - GG43/GG70
-    Returns '077', '291', 'GG43', etc.
-    """
     m = re.search(r'([A-Za-z0-9]+)\/([A-Za-z0-9]+)', title)
     if m:
         return m.group(1)
     return None
 
 def extract_set_phrase_from_title(title: str):
-    """
-    Extracts the phrase after the collector pattern.
-    Example:
-      '... 077/094 Phantasmal Flames 2025'
-      -> 'Phantasmal Flames'
-    """
     m = re.search(r'[A-Za-z0-9]+\/[A-Za-z0-9]+\s+(.+)', title)
     if not m:
         return None
 
     tail = m.group(1)
-
-    # Remove trailing years like 2025, 2026 etc.
     tail = re.sub(r'\b20\d{2}\b', '', tail).strip()
-
-    # Take first few words as set phrase
     words = tail.split()
     if not words:
         return None
 
-    return " ".join(words[:4])  # up to 4 words
+    return " ".join(words[:4])
+
 
 # -----------------------------
-# LOAD SETS FROM TCGDEX
+# LOAD SETS FROM API
 # -----------------------------
 
 def load_sets_from_api():
-    """
-    Loads all sets from tcgdex API.
-    Returns a list of dicts: {id, name}
-    """
-    print("Fetching sets from tcgdex API...")
+    print("Fetching sets from tcgdex API…")
     resp = requests.get(SETS_API_URL)
     resp.raise_for_status()
     data = resp.json()
 
-    sets = []
-    for s in data:
-        sets.append({
-            "id": s.get("id"),
-            "name": s.get("name", "")
-        })
-    print(f"Loaded {len(sets)} sets from API.")
+    sets = [{"id": s.get("id"), "name": s.get("name", "")} for s in data]
+    print(f"Loaded {len(sets)} sets.")
     return sets
 
 def find_best_set_match(set_phrase: str, sets):
-    """
-    Fuzzy match the phrase from the ACE title to tcgdex set names.
-    Returns (best_set_dict, score) or (None, 0).
-    """
     best = None
     best_score = 0.0
 
@@ -120,146 +116,149 @@ def find_best_set_match(set_phrase: str, sets):
 
     return None, 0.0
 
+
 # -----------------------------
-# LOAD POKEMON CARDS
+# LOAD POKEMON CARDS FROM DB
 # -----------------------------
 
-def load_pokemon_cards(path: str):
-    """
-    Loads pokemon_cards_full.csv and indexes by (set_id, localId).
-    """
+def load_pokemon_cards_from_db():
+    print("Loading Pokémon cards from DB…")
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, set_id, localId, name
+        FROM pokemon_cards
+    """)
+
     cards_by_key = {}
 
-    with open(path, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            set_id = row.get("set_id")
-            local_id = row.get("localId")
+    for row in cursor.fetchall():
+        set_id = row.set_id
+        local_id = row.localId
 
-            if not set_id or not local_id:
-                continue
+        if not set_id or not local_id:
+            continue
 
-            key = (set_id, local_id)
-            cards_by_key[key] = row
+        key = (set_id, local_id)
+        cards_by_key[key] = {
+            "id": row.id,
+            "name": row.name,
+            "set_id": set_id,
+            "localId": local_id
+        }
 
-    print(f"Loaded {len(cards_by_key)} cards from {path}")
+    conn.close()
+    print(f"Loaded {len(cards_by_key)} Pokémon cards.")
     return cards_by_key
 
+
 def find_card_for_sale(set_id: str, collector_token: str, cards_by_key):
-    """
-    Try multiple variants of the collector token to match localId:
-    - raw token (e.g. '077', 'GG43')
-    - stripped leading zeros (e.g. '77')
-    - zero-padded to 3 digits (e.g. '077')
-    """
     candidates = set()
 
-    # Alphanumeric like GG43: keep as is
     if re.search(r'[A-Za-z]', collector_token):
         candidates.add(collector_token)
     else:
-        # Numeric: try several forms
-        stripped = collector_token.lstrip("0")
-        if stripped == "":
-            stripped = "0"
+        stripped = collector_token.lstrip("0") or "0"
         padded3 = stripped.zfill(3)
 
-        candidates.add(collector_token)
-        candidates.add(stripped)
-        candidates.add(padded3)
+        candidates.update([collector_token, stripped, padded3])
 
     for local_id in candidates:
         key = (set_id, local_id)
         if key in cards_by_key:
-            return cards_by_key[key], local_id
+            return cards_by_key[key]
 
-    return None, None
+    return None
+
 
 # -----------------------------
-# PROCESS ACE SALES
+# PROCESS ACE SALES FROM DB
 # -----------------------------
 
-def process_ace_sales(ace_path: str, cards_by_key, sets, output_path: str):
-    output_rows = []
+def process_ace_sales():
+    conn = get_connection()
+    cursor = conn.cursor()
 
-    with open(ace_path, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
+    # Load ACE sales that are not yet matched
+    cursor.execute("""
+        SELECT id, title, price, sold_date, best_offer_accepted
+        FROM ace_ebay_sales
+        WHERE pokemon_card_id IS NULL
+    """)
 
-        for row in reader:
-            title = row["title"]
-            best_offer = row["best_offer_accepted"].strip().lower()
+    rows = cursor.fetchall()
+    print(f"Found {len(rows)} unmatched ACE sales.")
 
-            # Skip best offer accepted
-            if best_offer == "yes":
-                continue
+    sets = load_sets_from_api()
+    cards_by_key = load_pokemon_cards_from_db()
 
-            # Title filters
-            if not is_valid_ace_title(title):
-                continue
+    matched_count = 0
 
-            grade = extract_grade(title)
-            if not grade:
-                continue
+    for sale in rows:
+        title = sale.title
+        best_offer = sale.best_offer_accepted.lower()
 
-            collector_token = extract_collector_token(title)
-            if not collector_token:
-                continue
+        if best_offer == "yes":
+            continue
+        if not is_valid_ace_title(title):
+            continue
 
-            set_phrase = extract_set_phrase_from_title(title)
-            if not set_phrase:
-                continue
+        grade = extract_grade(title)
+        if not grade:
+            continue
 
-            # Match set via API data
-            best_set, set_score = find_best_set_match(set_phrase, sets)
-            if not best_set:
-                continue
+        collector_token = extract_collector_token(title)
+        if not collector_token:
+            continue
 
-            set_id = best_set["id"]
+        set_phrase = extract_set_phrase_from_title(title)
+        if not set_phrase:
+            continue
 
-            # Find card in pokemon_cards_full by (set_id, localId variants)
-            card, matched_local_id = find_card_for_sale(set_id, collector_token, cards_by_key)
-            if not card:
-                continue
+        best_set, score = find_best_set_match(set_phrase, sets)
+        if not best_set:
+            continue
 
-            output_rows.append({
-                "id": card["id"],
-                "set_id": set_id,
-                "localId": matched_local_id,
-                "name": card["name"],
-                "set_name": card["set_name"],
-                "grade": grade,
-                "price": row["price"],
-                "sold_date": row["sold_date"],
-                "title": title,
-                "set_phrase_from_title": set_phrase,
-                "set_match_name": best_set["name"],
-                "set_match_score": round(set_score, 3)
-            })
+        set_id = best_set["id"]
 
-    # Write output CSV
-    with open(output_path, "w", newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "id", "set_id", "localId", "name", "set_name",
-            "grade", "price", "sold_date", "title",
-            "set_phrase_from_title", "set_match_name", "set_match_score"
-        ])
-        writer.writeheader()
-        writer.writerows(output_rows)
+        card = find_card_for_sale(set_id, collector_token, cards_by_key)
+        if not card:
+            continue
 
-    print(f"Done! Wrote {len(output_rows)} rows to {output_path}")
+        # ⭐ UPDATE THE ACE SALE WITH ALL MATCHED FIELDS
+        cursor.execute("""
+            UPDATE ace_ebay_sales
+            SET pokemon_card_id = ?,
+                grade = ?,
+                collector_token = ?,
+                set_phrase = ?,
+                set_match_score = ?,
+                database_updated_at = SYSUTCDATETIME()
+            WHERE id = ?
+        """, 
+        card["id"],
+        grade,
+        collector_token,
+        set_phrase,
+        float(score),
+        sale.id)
+
+        matched_count += 1
+
+    conn.commit()
+    conn.close()
+
+    print(f"Done! Matched {matched_count} ACE sales to Pokémon cards.")
+
 
 # -----------------------------
 # MAIN
 # -----------------------------
 
 def main():
-    pokemon_cards_path = "pokemon_cards_full.csv"
-    ace_sales_path = "ace_sold_results.csv"
-    output_path = "pokemon_ace_mapped_prices.csv"
+    process_ace_sales()
 
-    sets = load_sets_from_api()
-    cards_by_key = load_pokemon_cards(pokemon_cards_path)
-    process_ace_sales(ace_sales_path, cards_by_key, sets, output_path)
 
 if __name__ == "__main__":
     main()

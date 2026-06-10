@@ -1,11 +1,75 @@
 import time
-import csv
-import os
 from playwright.sync_api import sync_playwright
+import pyodbc
+from datetime import datetime, timezone
 
 SEARCH_QUERY = "Ace Graded"
-KNOWN_CSV = "ace_sold_results.csv"   # newest known sales
-ARCHIVE_FOLDER = "archive"           # folder to store run snapshots
+
+SQL_SERVER = "database-1.cdgee08us4is.eu-west-2.rds.amazonaws.com,1433"
+SQL_DATABASE = "Pokemon"
+SQL_USER = "admin"
+SQL_PASSWORD = "dzz<[kqP~jnBbGI)9e:2xr1e7|rI"  # change this
+
+
+# -----------------------------
+# DB CONNECTION
+# -----------------------------
+
+def get_connection():
+    conn_str = (
+        "DRIVER={ODBC Driver 18 for SQL Server};"
+        f"SERVER={SQL_SERVER};"
+        f"DATABASE={SQL_DATABASE};"
+        f"UID={SQL_USER};"
+        f"PWD={SQL_PASSWORD};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str)
+
+
+# -----------------------------
+# LOAD NEWEST KNOWN RECORD FROM DB
+# -----------------------------
+
+def load_latest_record_from_db():
+    print("Loading newest known ACE sale from database…")
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1
+                title,
+                sold_date,
+                price,
+                best_offer_accepted
+            FROM ace_ebay_sales
+            ORDER BY database_created_at DESC
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            print("No existing ACE sales in DB — no stopping condition.")
+            return None
+
+        record = {
+            "title": row[0].strip() if row[0] else "",
+            "sold_date": row[1].strip() if row[1] else "",
+            "price": row[2].strip() if row[2] else "",
+            "best_offer_accepted": row[3].strip() if row[3] else "",
+        }
+
+        print("Newest known record in DB:")
+        print(record)
+
+        if not (record["title"] and record["price"] and record["sold_date"]):
+            print("Record missing required fields — stopping logic disabled.")
+            return None
+
+        return record
+    finally:
+        conn.close()
 
 
 # -----------------------------
@@ -98,42 +162,6 @@ def scroll_until_count(page, target_count=200, delay=1.2):
 
 
 # -----------------------------
-# LOAD FIRST (NEWEST) RECORD
-# -----------------------------
-
-def load_first_record(csv_path):
-    print(f"Loading first (newest) record from {csv_path}…")
-
-    try:
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            first_row = next(reader, None)
-
-        if first_row is None:
-            print("CSV is empty — no stopping condition.")
-            return None
-
-        record = {
-            "title": first_row.get("title", "").strip(),
-            "price": first_row.get("price", "").strip(),
-            "sold_date": first_row.get("sold_date", "").strip(),
-        }
-
-        print("Newest known record:")
-        print(record)
-
-        if not (record["title"] and record["price"] and record["sold_date"]):
-            print("Record missing required fields — stopping logic disabled.")
-            return None
-
-        return record
-
-    except FileNotFoundError:
-        print(f"{csv_path} not found — no stopping condition.")
-        return None
-
-
-# -----------------------------
 # MATCHING LOGIC
 # -----------------------------
 
@@ -142,9 +170,9 @@ def rows_match(scraped_row, known_record):
         return False
 
     return (
-        scraped_row.get("title", "").strip() == known_record["title"] and
-        scraped_row.get("price", "").strip() == known_record["price"] and
-        scraped_row.get("sold_date", "").strip() == known_record["sold_date"]
+        scraped_row.get("title", "").strip() == known_record["title"]
+        and scraped_row.get("price", "").strip() == known_record["price"]
+        and scraped_row.get("sold_date", "").strip() == known_record["sold_date"]
     )
 
 
@@ -188,7 +216,7 @@ def extract_cards(page, known_record=None):
             "title": title,
             "sold_date": sold_date,
             "price": price,
-            "best_offer_accepted": best_offer_accepted
+            "best_offer_accepted": best_offer_accepted,
         }
 
         if rows_match(row, known_record):
@@ -202,134 +230,51 @@ def extract_cards(page, known_record=None):
 
 
 # -----------------------------
-# CSV APPEND
+# DB INSERT
 # -----------------------------
 
-def append_rows_to_csv(rows, filename):
-    file_exists = os.path.exists(filename)
-
-    with open(filename, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["title", "sold_date", "price", "best_offer_accepted"]
-        )
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerows(rows)
-
-    print(f"Appended {len(rows)} rows to {filename}")
-
-
-# -----------------------------
-# PREPEND NEW ROWS TO ace_sold_results.csv
-# -----------------------------
-
-def prepend_to_known_csv(new_rows):
-    if not new_rows:
-        print("No new rows to prepend.")
+def insert_rows_to_db(rows):
+    if not rows:
+        print("No new rows to insert into DB.")
         return
 
-    print("Prepending new rows to ace_sold_results.csv…")
+    print(f"Inserting {len(rows)} new rows into ace_ebay_sales…")
 
-    with open(KNOWN_CSV, "r", encoding="utf-8") as f:
-        existing = list(csv.DictReader(f))
-
-    fieldnames = ["title", "sold_date", "price", "best_offer_accepted"]
-
-    with open(KNOWN_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
-        # NEW rows first
-        writer.writerows(new_rows)
-
-        # Then old rows
-        writer.writerows(existing)
-
-    print("ace_sold_results.csv updated with newest rows at the top.")
-
-
-# -----------------------------
-# ARCHIVE SNAPSHOT
-# -----------------------------
-
-def archive_file(path):
-    os.makedirs(ARCHIVE_FOLDER, exist_ok=True)
-    base = os.path.basename(path)
-    archive_path = os.path.join(ARCHIVE_FOLDER, base)
-    os.rename(path, archive_path)
-    print(f"Archived run to {archive_path}")
-
-# -----------------------------
-# REMOVE DUPLICATES - incases something sells and moves the data into the next page. 
-# -----------------------------
-
-def remove_duplicates_from_known_csv():
-    print("\nChecking for duplicates in ace_sold_results.csv…")
-
-    fieldnames = ["title", "sold_date", "price", "best_offer_accepted"]
-
+    conn = get_connection()
     try:
-        with open(KNOWN_CSV, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-    except FileNotFoundError:
-        print("No ace_sold_results.csv found — skipping duplicate removal.")
-        return
+        cursor = conn.cursor()
+        for r in rows:
+            cursor.execute(
+                """
+                INSERT INTO ace_ebay_sales (
+                    title,
+                    sold_date,
+                    price,
+                    best_offer_accepted,
+                    database_created_at,
+                    database_updated_at
+                )
+                VALUES (?, ?, ?, ?, SYSUTCDATETIME(), SYSUTCDATETIME())
+                """,
+                r["title"],
+                r["sold_date"],
+                r["price"],
+                r["best_offer_accepted"],
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
-    seen = set()
-    unique_rows = []
-    duplicates = []
-
-    for row in rows:
-        key = (
-            row["title"].strip(),
-            row["sold_date"].strip(),
-            row["price"].strip(),
-            row["best_offer_accepted"].strip()
-        )
-
-        if key in seen:
-            duplicates.append(row)
-        else:
-            seen.add(key)
-            unique_rows.append(row)
-
-    # Write cleaned file back
-    with open(KNOWN_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(unique_rows)
-
-    # Write duplicates to archive
-    if duplicates:
-        timestamp = time.strftime("%Y%m%d_%H%M")
-        dup_filename = f"duplicates_found_{timestamp}.csv"
-        dup_path = os.path.join(ARCHIVE_FOLDER, dup_filename)
-
-        os.makedirs(ARCHIVE_FOLDER, exist_ok=True)
-
-        with open(dup_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(duplicates)
-
-        print(f"Removed {len(duplicates)} duplicates.")
-        print(f"Duplicates archived at: {dup_path}")
-        print("Note: duplicates occur because eBay sells items extremely fast,")
-        print("and the scraper may capture the same sale twice if it appears in two runs.")
-    else:
-        print("No duplicates found.")
+    print("Insert complete.")
 
 
 # -----------------------------
 # PAGE LOOP
 # -----------------------------
 
-def scrape_all_pages(page, filename, known_record):
+def scrape_all_pages(page, known_record):
     all_rows = []
+    buffer = []  # rows waiting to be written
     page_number = 1
 
     while True:
@@ -338,11 +283,19 @@ def scrape_all_pages(page, filename, known_record):
         scroll_until_count(page, target_count=60)
 
         rows, stop_reached = extract_cards(page, known_record=known_record)
+
+        # Add to buffer
+        buffer.extend(rows)
         all_rows.extend(rows)
 
-        append_rows_to_csv(rows, filename)
-
         print(f"Total collected so far: {len(all_rows)}")
+        print(f"Buffer size: {len(buffer)}")
+
+        # ⭐ CHECKPOINT EVERY 60 ROWS
+        if len(buffer) >= 60:
+            print("\n*** CHECKPOINT: Writing 60 rows to DB ***")
+            insert_rows_to_db(buffer)
+            buffer = []  # clear buffer
 
         if stop_reached:
             print("Stopping because newest known record was found.")
@@ -360,7 +313,13 @@ def scrape_all_pages(page, filename, known_record):
 
         page_number += 1
 
+    # ⭐ FINAL FLUSH (write remaining rows)
+    if buffer:
+        print(f"\n*** FINAL CHECKPOINT: Writing {len(buffer)} rows to DB ***")
+        insert_rows_to_db(buffer)
+
     return all_rows
+
 
 
 # -----------------------------
@@ -399,10 +358,7 @@ def close_browser(browser):
 # -----------------------------
 
 def run():
-    known_record = load_first_record(KNOWN_CSV)
-
-    timestamp = time.strftime("%Y%m%d_%H%M")
-    filename = f"ace_sold_results_{timestamp}_{SEARCH_QUERY}.csv"
+    known_record = load_latest_record_from_db()
 
     with sync_playwright() as p:
         browser, page = open_ebay_and_search(p, SEARCH_QUERY)
@@ -412,18 +368,12 @@ def run():
         apply_graded_yes(page)
         apply_ace_grading(page)
 
-        new_rows = scrape_all_pages(page, filename, known_record)
+        new_rows = scrape_all_pages(page, known_record)
 
         close_browser(browser)
 
-    # PREPEND new rows to main CSV
-    prepend_to_known_csv(new_rows)
+    insert_rows_to_db(new_rows)
 
-    # ARCHIVE the run file
-    archive_file(filename)
-
-    # REMOVE DUPLICATES
-    remove_duplicates_from_known_csv()
 
 if __name__ == "__main__":
     run()
