@@ -32,7 +32,6 @@ HEADERS = [
     "image_small", "image_high",
     "variants_json",
 
-    # NEW FIELD
     "card_updated_at",
 
     # CARDMARKET
@@ -51,7 +50,7 @@ HEADERS = [
     "tcgplayer_updated_at",
     "tcgplayer_prices_json",
 
-    # DUPLICATES REMOVED
+    # EXTRA CARDMARKET FIELDS
     "cm_avg",
     "cm_low",
     "cm_trend",
@@ -62,6 +61,7 @@ HEADERS = [
     "cm_low_holo",
     "cm_trend_holo",
 
+    # TCGPLAYER MARKETS
     "normal_market",
     "reverse_market",
     "holo_market",
@@ -336,3 +336,14 @@ with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as out:
         writer.writerow(row)
 
 print("\nDONE — CSV updated with new and changed cards.")
+
+# ===================================
+# DELETE CHECKPOINT FILE
+# ===================================
+
+if os.path.exists(CHECKPOINT_FILE):
+    try:
+        os.remove(CHECKPOINT_FILE)
+        print(f"Deleted checkpoint file: {CHECKPOINT_FILE}")
+    except Exception as e:
+        print(f"Could not delete checkpoint file: {e}")
