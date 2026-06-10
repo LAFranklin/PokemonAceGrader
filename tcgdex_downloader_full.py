@@ -1,9 +1,8 @@
 import requests
-import csv
 import time
-import os
 import json
 from datetime import datetime
+import pyodbc
 from urllib.parse import quote
 
 # ===================================
@@ -11,69 +10,118 @@ from urllib.parse import quote
 # ===================================
 
 BASE_API_URL = "https://api.tcgdex.net/v2/en/cards"
-OUTPUT_FILE = "pokemon_cards_full.csv"
-CHECKPOINT_FILE = "checkpoint_cards_full.txt"
 REQUEST_DELAY = 0.15
 ITEMS_PER_PAGE = 100
 
-# ===================================
-# CSV HEADERS (UPDATED)
-# ===================================
+#ENTER CONNECTION DETAILS 
+SQL_SERVER = "" # replace or load from Secrets Manager
+SQL_DATABASE = "" # replace or load from Secrets Manager
+SQL_USER = "" # replace or load from Secrets Manager
+SQL_PASSWORD = "" # replace or load from Secrets Manager
+#ENTER CONNECTION DETAILS 
 
-HEADERS = [
-    "id", "name", "localId", "category", "rarity",
-    "set_id", "set_name", "set_series",
-    "artist", "illustrator", "hp",
-    "types", "stage",
-    "attack_count", "attacks_json",
-    "weaknesses_json", "resistances_json",
-    "retreat",
-    "regulation_mark",
-    "image_small", "image_high",
-    "variants_json",
 
-    "card_updated_at",
+def get_connection():
+    conn_str = (
+        "DRIVER={ODBC Driver 18 for SQL Server};"
+        f"SERVER={SQL_SERVER};"
+        f"DATABASE={SQL_DATABASE};"
+        f"UID={SQL_USER};"
+        f"PWD={SQL_PASSWORD};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str)
 
-    # CARDMARKET
-    "cardmarket_url",
-    "cardmarket_updated_at",
-    "cardmarket_avg1",
-    "cardmarket_avg7",
-    "cardmarket_avg30",
-    "cardmarket_low",
-    "cardmarket_trend",
-    "cardmarket_reverse_holo_sell",
-    "cardmarket_reverse_holo_low",
-    "cardmarket_reverse_holo_trend",
-
-    # TCGPLAYER
-    "tcgplayer_updated_at",
-    "tcgplayer_prices_json",
-
-    # EXTRA CARDMARKET FIELDS
-    "cm_avg",
-    "cm_low",
-    "cm_trend",
-    "cm_avg1_dup",
-    "cm_avg7_dup",
-    "cm_avg30_dup",
-    "cm_avg_holo",
-    "cm_low_holo",
-    "cm_trend_holo",
-
-    # TCGPLAYER MARKETS
-    "normal_market",
-    "reverse_market",
-    "holo_market",
-
-    "raw_estimate",
-    "ace8_estimate",
-    "ace9_estimate",
-    "ace10_estimate"
-]
 
 # ===================================
-# TIMESTAMP PARSER
+# SQL STATEMENTS
+# ===================================
+
+MERGE_CARD_SQL = """
+MERGE pokemon_cards AS target
+USING (VALUES (
+    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+)) AS source (
+    id,name,localId,category,rarity,set_id,set_name,set_series,
+    artist,illustrator,hp,types,stage,attack_count,attacks_json,
+    weaknesses_json,resistances_json,retreat,regulation_mark,
+    image_small,image_high,variants_json,card_updated_at
+)
+ON target.id = source.id
+
+WHEN MATCHED AND (
+    (target.card_updated_at IS NULL AND source.card_updated_at IS NOT NULL)
+    OR (target.card_updated_at IS NOT NULL AND source.card_updated_at > target.card_updated_at)
+)
+THEN UPDATE SET
+    name = source.name,
+    localId = source.localId,
+    category = source.category,
+    rarity = source.rarity,
+    set_id = source.set_id,
+    set_name = source.set_name,
+    set_series = source.set_series,
+    artist = source.artist,
+    illustrator = source.illustrator,
+    hp = source.hp,
+    types = source.types,
+    stage = source.stage,
+    attack_count = source.attack_count,
+    attacks_json = source.attacks_json,
+    weaknesses_json = source.weaknesses_json,
+    resistances_json = source.resistances_json,
+    retreat = source.retreat,
+    regulation_mark = source.regulation_mark,
+    image_small = source.image_small,
+    image_high = source.image_high,
+    variants_json = source.variants_json,
+    card_updated_at = source.card_updated_at,
+    database_updated_at = SYSUTCDATETIME()
+
+WHEN NOT MATCHED THEN
+INSERT (
+    id,name,localId,category,rarity,set_id,set_name,set_series,
+    artist,illustrator,hp,types,stage,attack_count,attacks_json,
+    weaknesses_json,resistances_json,retreat,regulation_mark,
+    image_small,image_high,variants_json,card_updated_at,
+    database_created_at,database_updated_at
+)
+VALUES (
+    source.id,source.name,source.localId,source.category,source.rarity,
+    source.set_id,source.set_name,source.set_series,source.artist,
+    source.illustrator,source.hp,source.types,source.stage,
+    source.attack_count,source.attacks_json,source.weaknesses_json,
+    source.resistances_json,source.retreat,source.regulation_mark,
+    source.image_small,source.image_high,source.variants_json,
+    source.card_updated_at,SYSUTCDATETIME(),SYSUTCDATETIME()
+);
+"""
+
+INSERT_CARDMARKET_SQL = """
+INSERT INTO cardmarket_pricing (
+    card_id, scraped_at, cardmarket_updated_at,
+    cardmarket_avg1, cardmarket_avg7, cardmarket_avg30,
+    cardmarket_low, cardmarket_trend,
+    cardmarket_reverse_holo_sell, cardmarket_reverse_holo_low, cardmarket_reverse_holo_trend,
+    cm_avg, cm_low, cm_trend,
+    cm_avg1_dup, cm_avg7_dup, cm_avg30_dup,
+    cm_avg_holo, cm_low_holo, cm_trend_holo,
+    normal_market, reverse_market, holo_market
+)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+"""
+
+INSERT_TCGPLAYER_SQL = """
+INSERT INTO tcgplayer_pricing (
+    card_id, scraped_at, tcgplayer_updated_at, tcgplayer_prices_json
+)
+VALUES (?,?,?,?);
+"""
+
+
+# ===================================
+# HELPERS
 # ===================================
 
 def parse_ts(ts):
@@ -84,266 +132,162 @@ def parse_ts(ts):
     except:
         return None
 
-# ===================================
-# LOAD EXISTING CSV INTO MEMORY
-# ===================================
-
-existing_rows = {}
-
-if os.path.exists(OUTPUT_FILE):
-    print("Loading existing CSV...")
-    with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            existing_rows[row["id"]] = row
-    print(f"Loaded {len(existing_rows)} existing rows")
 
 # ===================================
-# MAIN SCRAPING LOOP
+# MAIN SCRAPER
 # ===================================
 
-session = requests.Session()
-updated_rows = {}  # final output
+def process_card(card, cursor):
+    """Insert metadata + pricing for a single card."""
 
-page = 1
-while True:
-    print(f"\nFetching card list page {page}")
+    # -------------------------
+    # METADATA
+    # -------------------------
+    set_data = card.get("set", {}) or {}
+    serie = set_data.get("serie", {}) or {}
 
-    list_url = (
-        f"{BASE_API_URL}"
-        f"?pagination:page={page}"
-        f"&pagination:itemsPerPage={ITEMS_PER_PAGE}"
-    )
+    attacks = card.get("attacks", []) or []
+    weaknesses = card.get("weaknesses", []) or []
+    resistances = card.get("resistances", []) or []
+    variants = card.get("variants", {}) or {}
 
-    try:
-        response = session.get(list_url, timeout=60)
-        if response.status_code != 200:
-            print(f"List API failed: {response.status_code}")
-            time.sleep(10)
-            continue
-        cards = response.json()
-    except Exception as e:
-        print(f"LIST ERROR: {e}")
-        time.sleep(10)
-        continue
+    image_base = card.get("image", "")
+    image_small = f"{image_base}/low.png" if image_base else ""
+    image_high = f"{image_base}/high.png" if image_base else ""
 
-    if not cards:
-        print("No more cards found")
-        break
+    metadata_params = [
+        card.get("id"),
+        card.get("name", ""),
+        card.get("localId", ""),
+        card.get("category", ""),
+        card.get("rarity", ""),
+        set_data.get("id", ""),
+        set_data.get("name", ""),
+        serie.get("name", ""),
+        card.get("artist", ""),
+        card.get("illustrator", ""),
+        card.get("hp", ""),
+        ", ".join(card.get("types", []) or []),
+        card.get("stage", ""),
+        len(attacks),
+        json.dumps(attacks),
+        json.dumps(weaknesses),
+        json.dumps(resistances),
+        card.get("retreat", 0),
+        card.get("regulationMark", ""),
+        image_small,
+        image_high,
+        json.dumps(variants),
+        card.get("updated", "")
+    ]
 
-    for card_stub in cards:
-        card_id = card_stub.get("id", "")
-        if not card_id:
-            continue
+    cursor.execute(MERGE_CARD_SQL, metadata_params)
 
-        encoded_card_id = quote(card_id, safe="")
-        details_url = f"{BASE_API_URL}/{encoded_card_id}"
+    # -------------------------
+    # PRICING
+    # -------------------------
+    pricing = card.get("pricing", {}) or {}
+    cm = pricing.get("cardmarket", {}) or {}
+    tcg = pricing.get("tcgplayer", {}) or {}
+
+    scraped_at = datetime.utcnow()
+
+    # CARDMARKET
+    if cm.get("updated"):
+        cm_params = [
+            card["id"],
+            scraped_at,
+            cm.get("updated"),
+            cm.get("avg1"),
+            cm.get("avg7"),
+            cm.get("avg30"),
+            cm.get("low"),
+            cm.get("trend"),
+            cm.get("reverseHoloSell"),
+            cm.get("reverseHoloLow"),
+            cm.get("reverseHoloTrend"),
+            cm.get("avg"),
+            cm.get("low"),
+            cm.get("trend"),
+            cm.get("avg1"),
+            cm.get("avg7"),
+            cm.get("avg30"),
+            cm.get("avg-holo"),
+            cm.get("low-holo"),
+            cm.get("trend-holo"),
+            tcg.get("normal", {}).get("marketPrice"),
+            tcg.get("reverse", {}).get("marketPrice"),
+            tcg.get("holofoil", {}).get("marketPrice"),
+        ]
+        cursor.execute(INSERT_CARDMARKET_SQL, cm_params)
+
+    # TCGPLAYER
+    if tcg.get("updated"):
+        tcg_params = [
+            card["id"],
+            scraped_at,
+            tcg.get("updated"),
+            json.dumps(tcg)
+        ]
+        cursor.execute(INSERT_TCGPLAYER_SQL, tcg_params)
+
+
+def main():
+    session = requests.Session()
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    page = 1
+
+    while True:
+        print(f"\nFetching page {page}")
+
+        list_url = (
+            f"{BASE_API_URL}"
+            f"?pagination:page={page}"
+            f"&pagination:itemsPerPage={ITEMS_PER_PAGE}"
+        )
 
         try:
-            details_response = session.get(details_url, timeout=60)
-            if details_response.status_code != 200:
-                print(f"Detail failed {card_id}: {details_response.status_code}")
-                continue
-            card = details_response.json()
+            resp = session.get(list_url, timeout=60)
+            resp.raise_for_status()
+            cards = resp.json()
         except Exception as e:
-            print(f"DETAIL ERROR {card_id}: {e}")
+            print(f"List error: {e}")
+            time.sleep(5)
             continue
 
-        # ===================================
-        # TIMESTAMPS
-        # ===================================
+        if not cards:
+            print("No more cards.")
+            break
 
-        api_card_updated = card.get("updated", "")
-
-        pricing = card.get("pricing", {}) or {}
-        cardmarket = pricing.get("cardmarket", {}) or {}
-        tcgplayer = pricing.get("tcgplayer", {}) or {}
-
-        api_cm_updated = cardmarket.get("updated", "")
-        api_tcg_updated = tcgplayer.get("updated", "")
-
-        existing = existing_rows.get(card_id)
-
-        update_metadata = False
-        update_pricing = False
-
-        if existing:
-            old_card_updated = existing.get("card_updated_at", "")
-            old_cm_updated = existing.get("cardmarket_updated_at", "")
-            old_tcg_updated = existing.get("tcgplayer_updated_at", "")
-
-            # Compare metadata timestamps
-            if parse_ts(api_card_updated) and parse_ts(old_card_updated):
-                if parse_ts(api_card_updated) > parse_ts(old_card_updated):
-                    update_metadata = True
-
-            # Compare pricing timestamps
-            if parse_ts(api_cm_updated) and parse_ts(old_cm_updated):
-                if parse_ts(api_cm_updated) > parse_ts(old_cm_updated):
-                    update_pricing = True
-
-            if parse_ts(api_tcg_updated) and parse_ts(old_tcg_updated):
-                if parse_ts(api_tcg_updated) > parse_ts(old_tcg_updated):
-                    update_pricing = True
-
-            # Skip if nothing changed
-            if not update_metadata and not update_pricing:
-                updated_rows[card_id] = existing  # keep old row
+        for stub in cards:
+            card_id = stub.get("id")
+            if not card_id:
                 continue
 
-            print(f"Updating {card_id} (metadata={update_metadata}, pricing={update_pricing})")
+            encoded = quote(card_id, safe="")
+            detail_url = f"{BASE_API_URL}/{encoded}"
 
-        else:
-            print(f"New card: {card_id}")
-            update_metadata = True
-            update_pricing = True
+            try:
+                d = session.get(detail_url, timeout=60)
+                d.raise_for_status()
+                card = d.json()
+            except Exception as e:
+                print(f"Detail error {card_id}: {e}")
+                continue
 
-        # ===================================
-        # BUILD NEW ROW
-        # ===================================
+            print(f"Processing {card_id}")
+            process_card(card, cursor)
+            conn.commit()
 
-        name = card.get("name", "")
-        local_id = card.get("localId", "")
-        category = card.get("category", "")
-        rarity = card.get("rarity", "")
+            time.sleep(REQUEST_DELAY)
 
-        set_data = card.get("set", {}) or {}
-        set_id = set_data.get("id", "")
-        set_name = set_data.get("name", "")
-        serie = set_data.get("serie", {}) or {}
-        set_series = serie.get("name", "")
+        page += 1
 
-        artist = card.get("artist", "")
-        illustrator = card.get("illustrator", "")
-        hp = card.get("hp", "")
+    conn.close()
+    print("\nDONE — Database fully updated.")
 
-        types = card.get("types", [])
-        types = ", ".join(types) if isinstance(types, list) else ""
 
-        stage = card.get("stage", "")
-
-        attacks = card.get("attacks", []) or []
-        attack_count = len(attacks)
-        attacks_json = json.dumps(attacks)
-
-        weaknesses = card.get("weaknesses", []) or []
-        weaknesses_json = json.dumps(weaknesses)
-
-        resistances = card.get("resistances", []) or []
-        resistances_json = json.dumps(resistances)
-
-        retreat = card.get("retreat", 0)
-        regulation_mark = card.get("regulationMark", "")
-
-        image_base = card.get("image", "")
-        image_small = f"{image_base}/low.png" if image_base else ""
-        image_high = f"{image_base}/high.png" if image_base else ""
-
-        variants = card.get("variants", {}) or {}
-        variants_json = json.dumps(variants)
-
-        # Pricing
-        cm_avg = cardmarket.get("avg")
-        cm_low = cardmarket.get("low")
-        cm_trend = cardmarket.get("trend")
-        cm_avg1 = cardmarket.get("avg1")
-        cm_avg7 = cardmarket.get("avg7")
-        cm_avg30 = cardmarket.get("avg30")
-        cm_avg_holo = cardmarket.get("avg-holo")
-        cm_low_holo = cardmarket.get("low-holo")
-        cm_trend_holo = cardmarket.get("trend-holo")
-
-        normal = tcgplayer.get("normal", {}) or {}
-        reverse = tcgplayer.get("reverse", {}) or {}
-        holofoil = tcgplayer.get("holofoil", {}) or {}
-
-        normal_market = normal.get("marketPrice")
-        reverse_market = reverse.get("marketPrice")
-        holo_market = holofoil.get("marketPrice")
-
-        tcgplayer_prices_json = json.dumps(tcgplayer)
-
-        raw_estimate = cm_avg30
-
-        ace8_estimate = None
-        ace9_estimate = None
-        ace10_estimate = None
-
-        row = [
-            card_id, name, local_id, category, rarity,
-            set_id, set_name, set_series,
-            artist, illustrator, hp,
-            types, stage,
-            attack_count, attacks_json,
-            weaknesses_json, resistances_json,
-            retreat,
-            regulation_mark,
-            image_small, image_high,
-            variants_json,
-
-            api_card_updated,
-
-            cardmarket.get("url", ""),
-            api_cm_updated,
-            cm_avg1,
-            cm_avg7,
-            cm_avg30,
-            cm_low,
-            cm_trend,
-            cardmarket.get("reverseHoloSell", ""),
-            cardmarket.get("reverseHoloLow", ""),
-            cardmarket.get("reverseHoloTrend", ""),
-
-            api_tcg_updated,
-            tcgplayer_prices_json,
-
-            cm_avg,
-            cm_low,
-            cm_trend,
-            cm_avg1,
-            cm_avg7,
-            cm_avg30,
-            cm_avg_holo,
-            cm_low_holo,
-            cm_trend_holo,
-
-            normal_market,
-            reverse_market,
-            holo_market,
-
-            raw_estimate,
-            ace8_estimate,
-            ace9_estimate,
-            ace10_estimate
-        ]
-
-        updated_rows[card_id] = dict(zip(HEADERS, row))
-
-        time.sleep(REQUEST_DELAY)
-
-    page += 1
-
-# ===================================
-# WRITE FINAL CSV
-# ===================================
-
-print("\nWriting final CSV...")
-
-with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as out:
-    writer = csv.DictWriter(out, fieldnames=HEADERS)
-    writer.writeheader()
-    for row in updated_rows.values():
-        writer.writerow(row)
-
-print("\nDONE — CSV updated with new and changed cards.")
-
-# ===================================
-# DELETE CHECKPOINT FILE
-# ===================================
-
-if os.path.exists(CHECKPOINT_FILE):
-    try:
-        os.remove(CHECKPOINT_FILE)
-        print(f"Deleted checkpoint file: {CHECKPOINT_FILE}")
-    except Exception as e:
-        print(f"Could not delete checkpoint file: {e}")
+if __name__ == "__main__":
+    main()
