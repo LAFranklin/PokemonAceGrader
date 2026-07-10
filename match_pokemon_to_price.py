@@ -2,6 +2,10 @@ import re
 import requests
 import pyodbc
 from difflib import SequenceMatcher
+import botocore  
+import botocore.session  
+from aws_secretsmanager_caching import SecretCache, SecretCacheConfig
+import json
 
 # -----------------------------
 # DB CONFIG
@@ -9,8 +13,24 @@ from difflib import SequenceMatcher
 
 SQL_SERVER = "database-1.cdgee08us4is.eu-west-2.rds.amazonaws.com,1433"
 SQL_DATABASE = "Pokemon"
-SQL_USER = "admin"
-SQL_PASSWORD = "dzz<[kqP~jnBbGI)9e:2xr1e7|rI"  # change this
+SQL_USER = ""
+SQL_PASSWORD = ""
+
+# -----------------------------
+# GET DATABASE CREDS
+# -----------------------------
+
+def get_secret():
+    global SQL_USER, SQL_PASSWORD
+    client = botocore.session.get_session().create_client('secretsmanager', region_name='eu-west-2')
+    cache_config = SecretCacheConfig()
+    cache = SecretCache(config=cache_config, client=client)
+
+    secret = cache.get_secret_string('rds!db-74390ece-2c7e-4537-8547-47f190ac8c2d')
+    secret_json = json.loads(secret)
+
+    SQL_USER = secret_json["username"]
+    SQL_PASSWORD = secret_json["password"]
 
 
 def get_connection():
@@ -97,9 +117,24 @@ def load_sets_from_api():
     resp.raise_for_status()
     data = resp.json()
 
-    sets = [{"id": s.get("id"), "name": s.get("name", "")} for s in data]
+    sets = []
+    for s in data:
+        sets.append({
+            "id": s.get("id"),
+            "name": s.get("name", ""),
+            "logo": s.get("logo"),
+            "symbol": s.get("symbol"),
+            "total_cards": s.get("cardCount", {}).get("total"),
+            "official_cards": s.get("cardCount", {}).get("official")
+        })
+
     print(f"Loaded {len(sets)} sets.")
     return sets
+
+
+# -----------------------------
+# SET MATCHING (RESTORED)
+# -----------------------------
 
 def find_best_set_match(set_phrase: str, sets):
     best = None
@@ -115,6 +150,35 @@ def find_best_set_match(set_phrase: str, sets):
         return best, best_score
 
     return None, 0.0
+
+
+# -----------------------------
+# SAVE SETS TO DB
+# -----------------------------
+
+def save_sets_to_db(sets):
+    print("Saving sets to DB…")
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("TRUNCATE TABLE tcgdex_sets")
+
+    for s in sets:
+        cursor.execute("""
+            INSERT INTO tcgdex_sets (id, name, logo, symbol, total_cards, official_cards)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            s["id"],
+            s["name"],
+            s["logo"],
+            s["symbol"],
+            s["total_cards"],
+            s["official_cards"]
+        ))
+
+    conn.commit()
+    conn.close()
+    print("Sets saved successfully.")
 
 
 # -----------------------------
@@ -173,14 +237,13 @@ def find_card_for_sale(set_id: str, collector_token: str, cards_by_key):
 
 
 # -----------------------------
-# PROCESS ACE SALES FROM DB
+# PROCESS ACE SALES
 # -----------------------------
 
 def process_ace_sales():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Load ACE sales that are not yet matched
     cursor.execute("""
         SELECT id, title, price, sold_date, best_offer_accepted
         FROM ace_ebay_sales
@@ -226,7 +289,6 @@ def process_ace_sales():
         if not card:
             continue
 
-        # ⭐ UPDATE THE ACE SALE WITH ALL MATCHED FIELDS
         cursor.execute("""
             UPDATE ace_ebay_sales
             SET pokemon_card_id = ?,
@@ -257,6 +319,13 @@ def process_ace_sales():
 # -----------------------------
 
 def main():
+    get_secret()
+
+    # NEW: refresh sets table
+    sets = load_sets_from_api()
+    save_sets_to_db(sets)
+
+    # Existing ACE matching pipeline
     process_ace_sales()
 
 
