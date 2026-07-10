@@ -1,15 +1,39 @@
+import sys
 import time
 from playwright.sync_api import sync_playwright
 import pyodbc
 from datetime import datetime, timezone
+import botocore  
+import botocore.session  
+from aws_secretsmanager_caching import SecretCache, SecretCacheConfig
+import json
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 SEARCH_QUERY = "Ace Graded"
 
 SQL_SERVER = "database-1.cdgee08us4is.eu-west-2.rds.amazonaws.com,1433"
 SQL_DATABASE = "Pokemon"
-SQL_USER = "admin"
-SQL_PASSWORD = "dzz<[kqP~jnBbGI)9e:2xr1e7|rI"  # change this
+SQL_USER = ""
+SQL_PASSWORD = ""
 
+# -----------------------------
+# GET DATABASE CREDS
+# -----------------------------
+
+def get_secret():
+    global SQL_USER, SQL_PASSWORD
+    client = botocore.session.get_session().create_client('secretsmanager', region_name='eu-west-2')
+    cache_config = SecretCacheConfig()
+    cache = SecretCache(config=cache_config, client=client)
+
+    secret = cache.get_secret_string('rds!db-74390ece-2c7e-4537-8547-47f190ac8c2d')
+
+    secret_json = json.loads(secret)
+
+    SQL_USER = secret_json["username"]
+    SQL_PASSWORD = secret_json["password"]
 
 # -----------------------------
 # DB CONNECTION
@@ -27,13 +51,19 @@ def get_connection():
     )
     return pyodbc.connect(conn_str)
 
+# -----------------------------
+# SAFE PRINTING FOR AWS SERVICE MANAGER
+# -----------------------------
+
+def safe_print(obj):
+    print(str(obj).encode("ascii", errors="replace").decode("ascii"))
 
 # -----------------------------
 # LOAD NEWEST KNOWN RECORD FROM DB
 # -----------------------------
 
 def load_latest_record_from_db():
-    print("Loading newest known ACE sale from database…")
+    safe_print("Loading newest known ACE sale from database…")
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -50,7 +80,7 @@ def load_latest_record_from_db():
         )
         row = cursor.fetchone()
         if not row:
-            print("No existing ACE sales in DB — no stopping condition.")
+            safe_print("No existing ACE sales in DB — no stopping condition.")
             return None
 
         record = {
@@ -60,11 +90,11 @@ def load_latest_record_from_db():
             "best_offer_accepted": row[3].strip() if row[3] else "",
         }
 
-        print("Newest known record in DB:")
-        print(record)
+        safe_print("Newest known record in DB:")
+        safe_print(record)
 
         if not (record["title"] and record["price"] and record["sold_date"]):
-            print("Record missing required fields — stopping logic disabled.")
+            safe_print("Record missing required fields — stopping logic disabled.")
             return None
 
         return record
@@ -77,7 +107,7 @@ def load_latest_record_from_db():
 # -----------------------------
 
 def apply_sold_filter(page):
-    print("Applying SOLD filter…")
+    safe_print("Applying SOLD filter…")
     try:
         page.get_by_label("Sold items").check()
     except:
@@ -86,7 +116,7 @@ def apply_sold_filter(page):
 
 
 def apply_completed_filter(page):
-    print("Applying COMPLETED filter…")
+    safe_print("Applying COMPLETED filter…")
     try:
         page.get_by_label("Completed items").check()
     except:
@@ -95,24 +125,24 @@ def apply_completed_filter(page):
 
 
 def apply_graded_yes(page):
-    print("Applying GRADED = YES filter…")
+    safe_print("Applying GRADED = YES filter…")
     try:
         page.get_by_text("Graded").click()
         time.sleep(1)
         page.get_by_text("Yes").click()
     except:
-        print("Could not click graded filter.")
+        safe_print("Could not click graded filter.")
     time.sleep(3)
 
 
 def apply_ace_grading(page):
-    print("Applying PROFESSIONAL GRADER = ACE GRADING filter…")
+    safe_print("Applying PROFESSIONAL GRADER = ACE GRADING filter…")
     try:
         page.get_by_text("Professional Grader").click()
         time.sleep(1)
         page.get_by_text("Ace Grading (Ace)").click()
     except:
-        print("Could not click professional grader filter.")
+        safe_print("Could not click professional grader filter.")
     time.sleep(3)
 
 
@@ -121,7 +151,7 @@ def apply_ace_grading(page):
 # -----------------------------
 
 def scroll_until_count(page, target_count=200, delay=1.2):
-    print(f"Scrolling until at least {target_count} items are loaded…")
+    safe_print(f"Scrolling until at least {target_count} items are loaded…")
 
     last_count = 0
     same_count_repeats = 0
@@ -130,16 +160,16 @@ def scroll_until_count(page, target_count=200, delay=1.2):
         cards = page.locator(".srp-results li.s-card")
         count = cards.count()
 
-        print(f"Loaded {count} items…")
+        safe_print(f"Loaded {count} items…")
 
         if count >= target_count:
-            print("Target reached.")
+            safe_print("Target reached.")
             break
 
         if count == last_count:
             same_count_repeats += 1
             if same_count_repeats >= 5:
-                print("No more items loading — reached end.")
+                safe_print("No more items loading — reached end.")
                 break
         else:
             same_count_repeats = 0
@@ -158,7 +188,7 @@ def scroll_until_count(page, target_count=200, delay=1.2):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(delay)
 
-    print("Scrolling complete.")
+    safe_print("Scrolling complete.")
 
 
 # -----------------------------
@@ -181,11 +211,11 @@ def rows_match(scraped_row, known_record):
 # -----------------------------
 
 def extract_cards(page, known_record=None):
-    print("Extracting card data from DOM…")
+    safe_print("Extracting card data from DOM…")
 
     cards = page.locator(".srp-results li.s-card")
     count = cards.count()
-    print(f"Found {count} cards.")
+    safe_print(f"Found {count} cards.")
 
     rows = []
     stop_reached = False
@@ -220,7 +250,7 @@ def extract_cards(page, known_record=None):
         }
 
         if rows_match(row, known_record):
-            print("\n*** Newest known record reached — stopping scraper. ***")
+            safe_print("\n*** Newest known record reached — stopping scraper. ***")
             stop_reached = True
             break
 
@@ -235,10 +265,10 @@ def extract_cards(page, known_record=None):
 
 def insert_rows_to_db(rows):
     if not rows:
-        print("No new rows to insert into DB.")
+        safe_print("No new rows to insert into DB.")
         return
 
-    print(f"Inserting {len(rows)} new rows into ace_ebay_sales…")
+    safe_print(f"Inserting {len(rows)} new rows into ace_ebay_sales…")
 
     conn = get_connection()
     try:
@@ -266,7 +296,7 @@ def insert_rows_to_db(rows):
 
             except pyodbc.IntegrityError:
                 # Duplicate row — skip and continue
-                print(f"[DUPLICATE] Skipped: {r['title']} | {r['sold_date']} | {r['price']}")
+                safe_print(f"[DUPLICATE] Skipped: {r['title']} | {r['sold_date']} | {r['price']}")
                 continue
 
         conn.commit()
@@ -274,7 +304,7 @@ def insert_rows_to_db(rows):
     finally:
         conn.close()
 
-    print("Insert complete.")
+    safe_print("Insert complete.")
 
 
 # -----------------------------
@@ -287,7 +317,7 @@ def scrape_all_pages(page, known_record):
     page_number = 1
 
     while True:
-        print(f"\n=== Extracting Page {page_number} ===")
+        safe_print(f"\n=== Extracting Page {page_number} ===")
 
         scroll_until_count(page, target_count=60)
 
@@ -297,17 +327,17 @@ def scrape_all_pages(page, known_record):
         buffer.extend(rows)
         all_rows.extend(rows)
 
-        print(f"Total collected so far: {len(all_rows)}")
-        print(f"Buffer size: {len(buffer)}")
+        safe_print(f"Total collected so far: {len(all_rows)}")
+        safe_print(f"Buffer size: {len(buffer)}")
 
         # ⭐ CHECKPOINT EVERY 60 ROWS
         if len(buffer) >= 60:
-            print("\n*** CHECKPOINT: Writing 60 rows to DB ***")
+            safe_print("\n*** CHECKPOINT: Writing 60 rows to DB ***")
             insert_rows_to_db(buffer)
             buffer = []  # clear buffer
 
         if stop_reached:
-            print("Stopping because newest known record was found.")
+            safe_print("Stopping because newest known record was found.")
             break
 
         next_button = page.locator("a.pagination__next")
@@ -315,7 +345,7 @@ def scrape_all_pages(page, known_record):
             print("No more pages available.")
             break
 
-        print("Going to next page…")
+        safe_print("Going to next page…")
         next_button.first.click()
         page.wait_for_load_state("domcontentloaded")
         time.sleep(3)
@@ -324,7 +354,7 @@ def scrape_all_pages(page, known_record):
 
     # ⭐ FINAL FLUSH (write remaining rows)
     if buffer:
-        print(f"\n*** FINAL CHECKPOINT: Writing {len(buffer)} rows to DB ***")
+        safe_print(f"\n*** FINAL CHECKPOINT: Writing {len(buffer)} rows to DB ***")
         insert_rows_to_db(buffer)
 
     return all_rows
@@ -339,7 +369,7 @@ def open_ebay_and_search(p, query):
     browser = p.chromium.launch(headless=False)
     page = browser.new_page()
 
-    print("Opening eBay UK…")
+    safe_print("Opening eBay UK…")
     page.goto("https://www.ebay.co.uk/")
     page.wait_for_load_state("domcontentloaded")
 
@@ -348,7 +378,7 @@ def open_ebay_and_search(p, query):
     except:
         pass
 
-    print("Searching…")
+    safe_print("Searching…")
     page.fill("input[aria-label='Search for anything']", query)
     page.keyboard.press("Enter")
     page.wait_for_load_state("domcontentloaded")
@@ -367,6 +397,8 @@ def close_browser(browser):
 # -----------------------------
 
 def run():
+    get_secret()
+
     known_record = load_latest_record_from_db()
 
     with sync_playwright() as p:
