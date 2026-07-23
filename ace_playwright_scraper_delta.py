@@ -223,16 +223,19 @@ def extract_cards(page, known_record=None):
     for i in range(count):
         card = cards.nth(i)
 
+        # SOLD DATE
         try:
             sold_date = card.locator(".s-card__caption .default").inner_text().strip()
         except:
             sold_date = ""
 
+        # TITLE
         try:
             title = card.locator(".s-card__title .primary").inner_text().strip()
         except:
             title = ""
 
+        # PRICE + BEST OFFER
         try:
             price_el = card.locator(".s-card__price")
             price = price_el.inner_text().strip()
@@ -242,13 +245,28 @@ def extract_cards(page, known_record=None):
             price = ""
             best_offer_accepted = "No"
 
+        # URL
+        try:
+            url = card.locator(".s-card__link").get_attribute("href") or ""
+        except:
+            url = ""
+
+        # LISTING ID
+        try:
+            listing_id = card.get_attribute("data-listingid") or ""
+        except:
+            listing_id = ""
+
         row = {
             "title": title,
             "sold_date": sold_date,
             "price": price,
             "best_offer_accepted": best_offer_accepted,
+            "url": url,
+            "listing_id": listing_id,
         }
 
+        # STOPPING LOGIC
         if rows_match(row, known_record):
             safe_print("\n*** Newest known record reached — stopping scraper. ***")
             stop_reached = True
@@ -283,15 +301,19 @@ def insert_rows_to_db(rows):
                         sold_date,
                         price,
                         best_offer_accepted,
+                        url,
+                        listing_id,
                         database_created_at,
                         database_updated_at
                     )
-                    VALUES (?, ?, ?, ?, SYSUTCDATETIME(), SYSUTCDATETIME())
+                    VALUES (?, ?, ?, ?, ?, ?, SYSUTCDATETIME(), SYSUTCDATETIME())
                     """,
                     r["title"],
                     r["sold_date"],
                     r["price"],
                     r["best_offer_accepted"],
+                    r["url"],
+                    r["listing_id"],
                 )
 
             except pyodbc.IntegrityError:
