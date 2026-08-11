@@ -2,9 +2,8 @@ import subprocess
 import sys
 
 scripts = [
-    "ace_playwright_scraper_delta.py",
-    "match_pokemon_to_price.py",
-    "update_latest_sets"
+    "ebay_coldcomps_scrapper.py",
+    "match_pokemon_to_price.py"
 ]
 
 for script in scripts:
