@@ -11,7 +11,9 @@ This repository is part of a larger ecosystem of projects that work together:
 | Project | Role | Links |
 |---------|------|-------|
 | **PokemonAceGrader** *(this repo)* | Data collection — scrapes eBay ACE sales, matches to Pokémon card metadata, writes to database | [GitHub](https://github.com/LAFranklin/PokemonAceGrader) |
-| **Pokemon-card-grading** | Frontend website — displays the graded card pricing data collected by this pipeline | [GitHub](https://github.com/LAFranklin/Pokemon-card-grading) · [Live site](https://pokmon-card-grading.vercel.app/) |
+| **Pokemon-card-grading** | Frontend website hosted on Vercel — displays the graded card pricing data collected by this pipeline | [GitHub](https://github.com/LAFranklin/Pokemon-card-grading) · [Live site](https://pokemon-card-grading.vercel.app/) |
+| **PokemonCardsAPI** | Backend API repository — provides the frontend's database access layer for pricing and card data | [GitHub](https://github.com/LAFranklin/PokemonCardsAPI) |
+| **Vercel** | Hosting platform for the `Pokemon-card-grading` frontend deployment | [Vercel](https://vercel.com/) |
 | **sold-comps.com** | External eBay data API — used by `ebay_coldcomps_scrapper.py` to fetch sold eBay listings | [Dashboard](https://sold-comps.com/dashboard/usage) · [API docs](https://api.sold-comps.com) |
 
 ### How they fit together
@@ -30,12 +32,16 @@ tcgdex_downloader_full.py   ──►  Database (pokemon_cards)
                               Database (matched sales)
                                       │
                                       ▼
-                         Pokemon-card-grading (frontend)
-                         https://pokmon-card-grading.vercel.app/
+                             PokemonCardsAPI
+                                      │
+                                      ▼
+                    Pokemon-card-grading (frontend on Vercel)
+                    https://pokemon-card-grading.vercel.app/
 ```
 
 - **This repo** (`PokemonAceGrader`) is responsible for all data ingestion and processing.
-- The **Pokemon-card-grading** frontend reads from the same database to display prices on the website.
+- **PokemonCardsAPI** is the API layer that reads from the database and serves the frontend.
+- The **Pokemon-card-grading** frontend is hosted on **Vercel** and consumes **PokemonCardsAPI** to display prices on the website.
 - **sold-comps.com** provides the eBay sold-listing data used as the raw input for ACE sales.
 
 ---
