@@ -44,7 +44,7 @@ tcgdex_downloader_full.py   ──►  Database (pokemon_cards)
 
 This repository contains a fully automated data pipeline for:
 
-- Scraping **ACE‑graded Pokémon card sales** from eBay  
+- Scraping **ACE‑graded Pokémon card sales** via the **sold-comps.com API**  
 - Matching ACE sales to real Pokémon cards  
 - Downloading **Pokémon card metadata** from TCGdex (on a separate instance)  
 - Writing all processed data directly into the **database**  
@@ -68,13 +68,13 @@ All scripts write directly to the **database**, which is the single source of tr
 |---------|-------|
 | **Name** | Ace Price Gathering |
 | **Instance ID** | `i-0bd1c0888cae1d21d` |
-| **Purpose** | Runs the **ACE eBay scraper** and **ACE → Pokémon matching pipeline** |
+| **Purpose** | Calls the **sold-comps.com API** to fetch ACE eBay sales data and runs the **ACE → Pokémon matching pipeline** |
 
 ### **Role**
 This instance performs:
 
-- Web scraping using Playwright  
-- ACE sales extraction  
+- Fetches ACE‑graded sold listings via the **sold-comps.com API** (no direct eBay scraping)  
+- ACE sales extraction and processing  
 - ACE → Pokémon card matching  
 - Writes all results directly into the database  
 
@@ -134,8 +134,8 @@ The pipeline consists of **three main scripts**, but they run on **two separate 
 
 ---
 
-## 1. `ace_playwright_scraper_delta.py`  
-### **Purpose:** Scrape ACE‑graded Pokémon card sales from eBay and write them to the database.
+## 1. `ebay_coldcomps_scrapper.py`  
+### **Purpose:** Fetch ACE‑graded Pokémon card sales via the sold-comps.com API and write them to the database.
 
 ### Extracts:
 - Title  
@@ -144,9 +144,9 @@ The pipeline consists of **three main scripts**, but they run on **two separate 
 - Sold date  
 
 ### Features:
-- Delta mode (only new sales)  
-- Automatic scrolling + pagination  
-- Writes all scraped rows directly into the database  
+- Calls the **sold-comps.com REST API** — no direct eBay browser scraping  
+- Delta mode (only new sales since last run)  
+- Writes all fetched rows directly into the database  
 - No CSV output  
 
 ---
@@ -197,7 +197,7 @@ The pipeline consists of **three main scripts**, but they run on **two separate 
 Those responsibilities are handled elsewhere.
 
 ### What it does:
-1. Scrape ACE sales  
+1. Fetch ACE sales via sold-comps.com API  
 2. Match ACE sales to Pokémon cards  
 3. Write results to the database  
 
