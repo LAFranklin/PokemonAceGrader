@@ -35,10 +35,13 @@ Database refresh + stored-procedure runner (despite the filename, it does not do
 ### `run_pricing_pipeline.py`
 Simple sequential runner.
 
-It currently runs these entries in order:
+It currently attempts to run these entries in order:
 1. `ace_playwright_scraper_delta.py`
 2. `match_pokemon_to_price.py`
-3. `update_latest_sets` (as written in the script)
+3. `update_latest_sets` (no `.py` extension in the script)
+
+Current repository status for step 3:
+- No `update_latest_sets` file exists in this repository, so this third step will fail unless that executable/script is added or the pipeline list is corrected.
 
 ## Legacy/alternate scripts
 
