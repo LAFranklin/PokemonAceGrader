@@ -163,7 +163,7 @@ def load_latest_record_from_db():
         record = {
             "id": row[0],
             "title": row[1].strip() if row[1] else "",
-            "sold_date": row[2].strip() if row[2] else "",
+            "sold_date": str(row[2]) if row[2] else "",
             "price": row[3].strip() if row[3] else "",
             "best_offer_accepted": row[4].strip() if row[4] else "",
             "url": row[5].strip() if row[5] else "",
