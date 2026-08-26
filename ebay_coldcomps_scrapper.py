@@ -30,8 +30,17 @@ SOLDCOMPS_API_KEY = "sc_HpDsIASZYuxsbNOInAfOcgWlZmuZYeSZfUdfMcGdMrdBLbIDxcFMypGp
 EBAY_SITE = "ebay.co.uk"
 
 COUNT_PER_PAGE = 240
-DEFAULT_DAYS_TO_SCRAPE = 20
-SAFETY_BUFFER_DAYS = 1
+
+# ============================================================
+# ONE-OFF BACKFILL CONFIGURATION
+# ============================================================
+
+BACKFILL_ENABLED = False
+BACKFILL_START_DATE = date(2026, 8, 18)
+
+# Stop pagination when this many listings on ONE PAGE
+# are older than the backfill start date.
+BACKFILL_OLD_LISTINGS_STOP_THRESHOLD = 20
 
 # ============================================================
 # DATABASE CONFIGURATION
@@ -110,8 +119,15 @@ def parse_sold_date(value):
 
     try:
         if "T" in value:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
-        return datetime.strptime(value[:10], "%Y-%m-%d").date()
+            return datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            ).date()
+
+        return datetime.strptime(
+            value[:10],
+            "%Y-%m-%d"
+        ).date()
+
     except Exception:
         return None
 
@@ -124,8 +140,10 @@ def load_latest_record_from_db():
     safe_print("Loading newest known ACE sale from database...")
 
     conn = get_connection()
+
     try:
         cursor = conn.cursor()
+
         cursor.execute(
             """
             SELECT TOP 1
@@ -154,8 +172,8 @@ def load_latest_record_from_db():
             """
         )
 
-
         row = cursor.fetchone()
+
         if not row:
             safe_print("No existing ACE sales found.")
             return None
@@ -186,19 +204,55 @@ def load_latest_record_from_db():
 def calculate_days_to_scrape(last_sold_date):
     today = date.today()
 
+    if BACKFILL_ENABLED:
+        days_to_scrape = (
+            today - BACKFILL_START_DATE
+        ).days + 1
+
+        days_to_scrape = max(
+            2,
+            min(days_to_scrape, 365)
+        )
+
+        safe_print("BACKFILL MODE ENABLED")
+        safe_print(f"Backfill start date: {BACKFILL_START_DATE}")
+        safe_print(f"Today: {today}")
+        safe_print(f"SoldComps daysToScrape: {days_to_scrape}")
+
+        return days_to_scrape
+
     if not last_sold_date:
-        safe_print(f"No usable previous sale date. Using default {DEFAULT_DAYS_TO_SCRAPE} days.")
-        return DEFAULT_DAYS_TO_SCRAPE
+        safe_print(
+            "No usable previous sale date."
+        )
+        return 20
 
-    days_since_last_sale = (today - last_sold_date).days
-    days_to_scrape = max(2, days_since_last_sale + SAFETY_BUFFER_DAYS + 1)
-    days_to_scrape = min(days_to_scrape, 365)
+    days_since_last_sale = (
+        today - last_sold_date
+    ).days
 
-    safe_print(f"Latest DB sale date: {last_sold_date}")
-    safe_print(f"Today: {today}")
-    safe_print(f"Days since latest sale: {days_since_last_sale}")
-    safe_print(f"Safety buffer: {SAFETY_BUFFER_DAYS} day")
-    safe_print(f"SoldComps daysToScrape: {days_to_scrape}")
+    days_to_scrape = max(
+        2,
+        days_since_last_sale + 2
+    )
+
+    days_to_scrape = min(
+        days_to_scrape,
+        365
+    )
+
+    safe_print(
+        f"Latest DB sale date: {last_sold_date}"
+    )
+    safe_print(
+        f"Today: {today}"
+    )
+    safe_print(
+        f"Days since latest sale: {days_since_last_sale}"
+    )
+    safe_print(
+        f"SoldComps daysToScrape: {days_to_scrape}"
+    )
 
     return days_to_scrape
 
@@ -209,13 +263,21 @@ def calculate_days_to_scrape(last_sold_date):
 
 def create_api_run(known_record, days_to_scrape):
     conn = get_connection()
+
     try:
         cursor = conn.cursor()
+
         cursor.execute(
             """
             INSERT INTO dbo.ace_ebay_api_runs
-            (status, search_query, ebay_site, days_to_scrape,
-             last_known_listing_id, last_known_sold_date)
+            (
+                status,
+                search_query,
+                ebay_site,
+                days_to_scrape,
+                last_known_listing_id,
+                last_known_sold_date
+            )
             OUTPUT INSERTED.id
             VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -228,9 +290,13 @@ def create_api_run(known_record, days_to_scrape):
         )
 
         run_id = cursor.fetchone()[0]
+
         conn.commit()
 
-        safe_print(f"Created API run #{run_id}")
+        safe_print(
+            f"Created API run #{run_id}"
+        )
+
         return run_id
 
     finally:
@@ -295,11 +361,18 @@ def update_api_run(
         values.append(error_message)
 
     if completed:
-        fields.append("completed_at = SYSUTCDATETIME()")
+        fields.append(
+            "completed_at = SYSUTCDATETIME()"
+        )
+
         fields.append(
             """
             duration_seconds =
-                DATEDIFF_BIG(MILLISECOND, started_at, SYSUTCDATETIME()) / 1000.0
+                DATEDIFF_BIG(
+                    MILLISECOND,
+                    started_at,
+                    SYSUTCDATETIME()
+                ) / 1000.0
             """
         )
 
@@ -315,10 +388,17 @@ def update_api_run(
     """
 
     conn = get_connection()
+
     try:
         cursor = conn.cursor()
-        cursor.execute(sql, *values)
+
+        cursor.execute(
+            sql,
+            *values
+        )
+
         conn.commit()
+
     finally:
         conn.close()
 
@@ -332,10 +412,19 @@ def normalise_price(value):
         return ""
 
     value = str(value).strip()
-    value = value.replace("£", "").replace("$", "").replace("€", "").replace(",", "").strip()
+
+    value = (
+        value
+        .replace("£", "")
+        .replace("$", "")
+        .replace("€", "")
+        .replace(",", "")
+        .strip()
+    )
 
     try:
         return f"{float(value):.2f}"
+
     except Exception:
         return value.lower()
 
@@ -348,30 +437,72 @@ def rows_match(scraped_row, known_record):
     if not known_record:
         return False
 
-    scraped_listing_id = scraped_row.get("listing_id", "").strip()
-    known_listing_id = known_record.get("listing_id", "").strip()
+    scraped_listing_id = (
+        scraped_row.get("listing_id", "").strip()
+    )
 
-    if scraped_listing_id and known_listing_id and scraped_listing_id == known_listing_id:
+    known_listing_id = (
+        known_record.get("listing_id", "").strip()
+    )
+
+    if (
+        scraped_listing_id
+        and known_listing_id
+        and scraped_listing_id == known_listing_id
+    ):
         return True
 
-    title_match = scraped_row.get("title", "").strip().lower() == known_record.get("title", "").strip().lower()
-    price_match = normalise_price(scraped_row.get("price", "")) == normalise_price(known_record.get("price", ""))
+    title_match = (
+        scraped_row.get("title", "").strip().lower()
+        ==
+        known_record.get("title", "").strip().lower()
+    )
 
-    scraped_date = parse_sold_date(scraped_row.get("sold_date", ""))
-    known_date = parse_sold_date(known_record.get("sold_date", ""))
+    price_match = (
+        normalise_price(
+            scraped_row.get("price", "")
+        )
+        ==
+        normalise_price(
+            known_record.get("price", "")
+        )
+    )
 
-    date_match = scraped_date is not None and known_date is not None and scraped_date == known_date
+    scraped_date = parse_sold_date(
+        scraped_row.get("sold_date", "")
+    )
 
-    return title_match and price_match and date_match
+    known_date = parse_sold_date(
+        known_record.get("sold_date", "")
+    )
+
+    date_match = (
+        scraped_date is not None
+        and known_date is not None
+        and scraped_date == known_date
+    )
+
+    return (
+        title_match
+        and price_match
+        and date_match
+    )
 
 
 # ============================================================
 # CALL SOLDCOMPS
 # ============================================================
 
-def get_sold_listings(page_number, days_to_scrape):
+def get_sold_listings(
+    page_number,
+    days_to_scrape
+):
+
     if not SOLDCOMPS_API_KEY:
-        raise RuntimeError("SOLDCOMPS_API_KEY environment variable has not been configured.")
+        raise RuntimeError(
+            "SOLDCOMPS_API_KEY environment variable "
+            "has not been configured."
+        )
 
     params = {
         "keyword": SEARCH_QUERY,
@@ -383,35 +514,71 @@ def get_sold_listings(page_number, days_to_scrape):
     }
 
     headers = {
-        "Authorization": f"Bearer {SOLDCOMPS_API_KEY}",
+        "Authorization": (
+            f"Bearer {SOLDCOMPS_API_KEY}"
+        ),
         "Accept": "application/json"
     }
 
-    safe_print(f"Calling SoldComps page {page_number}...")
+    safe_print(
+        f"Calling SoldComps page {page_number}..."
+    )
 
-    response = requests.get(SOLDCOMPS_API_URL, params=params, headers=headers, timeout=60)
+    response = requests.get(
+        SOLDCOMPS_API_URL,
+        params=params,
+        headers=headers,
+        timeout=60
+    )
 
-    safe_print(f"SoldComps HTTP status: {response.status_code}")
+    safe_print(
+        f"SoldComps HTTP status: "
+        f"{response.status_code}"
+    )
 
     if response.status_code == 429:
-        retry_after = response.headers.get("Retry-After", "10")
+
+        retry_after = response.headers.get(
+            "Retry-After",
+            "10"
+        )
+
         try:
-            wait_seconds = int(retry_after)
+            wait_seconds = int(
+                retry_after
+            )
+
         except Exception:
             wait_seconds = 10
 
-        safe_print(f"Rate limited. Waiting {wait_seconds} seconds...")
+        safe_print(
+            f"Rate limited. Waiting "
+            f"{wait_seconds} seconds..."
+        )
+
         time.sleep(wait_seconds)
-        return get_sold_listings(page_number, days_to_scrape)
+
+        return get_sold_listings(
+            page_number,
+            days_to_scrape
+        )
 
     if response.status_code == 401:
-        raise RuntimeError("SoldComps API key is invalid.")
+        raise RuntimeError(
+            "SoldComps API key is invalid."
+        )
 
     if response.status_code == 403:
-        raise RuntimeError("SoldComps API quota has been exhausted.")
+        raise RuntimeError(
+            "SoldComps API quota has been exhausted."
+        )
 
     if response.status_code != 200:
-        raise RuntimeError(f"SoldComps API error {response.status_code}: {response.text}")
+        raise RuntimeError(
+            f"SoldComps API error "
+            f"{response.status_code}: "
+            f"{response.text}"
+        )
 
     return response.json()
 
@@ -421,50 +588,124 @@ def get_sold_listings(page_number, days_to_scrape):
 # ============================================================
 
 def convert_listing(item):
+
     sold_price = item.get("soldPrice")
     sold_currency = item.get("soldCurrency")
 
     if sold_price:
+
         if sold_currency == "GBP":
             price = f"£{sold_price}"
+
         else:
-            price = f"{sold_price} {sold_currency or ''}".strip()
+            price = (
+                f"{sold_price} "
+                f"{sold_currency or ''}"
+            ).strip()
+
     else:
         price = ""
 
     return {
-        "title": (item.get("title") or "").strip(),
-        "sold_date": (item.get("endedAt") or "").strip(),
+        "title": (
+            item.get("title") or ""
+        ).strip(),
+
+        "sold_date": (
+            item.get("endedAt") or ""
+        ).strip(),
+
         "price": price,
-        "best_offer_accepted": "Yes" if item.get("bestOfferAccepted") is True else "No",
-        "url": (item.get("url") or "").strip(),
-        "listing_id": str(item.get("itemId") or "").strip(),
 
-        "thumbnail_url": item.get("thumbnailUrl"),
-        "full_res_thumbnail_url": item.get("fullResThumbnailUrl"),
-        "epid": item.get("epid"),
-        "condition": item.get("condition"),
-        "condition_id": item.get("conditionId"),
-        "seller_type": item.get("sellerType"),
-        "buying_format": item.get("buyingFormat"),
-        "bid_count": item.get("bidCount"),
-        "category_id": str(item.get("categoryId")) if item.get("categoryId") is not None else None,
-        "listing_type": item.get("listingType"),
+        "best_offer_accepted":
+            "Yes"
+            if item.get("bestOfferAccepted") is True
+            else "No",
 
-        "ended_at": item.get("endedAt"),
-        "sold_price": float(sold_price) if sold_price else None,
-        "sold_currency": sold_currency,
+        "url": (
+            item.get("url") or ""
+        ).strip(),
 
-        "shipping_price": float(item.get("shippingPrice")) if item.get("shippingPrice") else None,
-        "shipping_currency": item.get("shippingCurrency"),
-        "shipping_type": item.get("shippingType"),
-        "total_price": float(item.get("totalPrice")) if item.get("totalPrice") else None,
+        "listing_id": str(
+            item.get("itemId") or ""
+        ).strip(),
 
-        "seller_username": item.get("sellerUsername"),
-        "seller_positive_percent": float(item.get("sellerPositivePercent")) if item.get("sellerPositivePercent") is not None else None,
-        "seller_feedback_score": item.get("sellerFeedbackScore"),
-        "item_location": item.get("itemLocation"),
-        "scraped_at": item.get("scrapedAt")
+        "thumbnail_url":
+            item.get("thumbnailUrl"),
+
+        "full_res_thumbnail_url":
+            item.get("fullResThumbnailUrl"),
+
+        "epid":
+            item.get("epid"),
+
+        "condition":
+            item.get("condition"),
+
+        "condition_id":
+            item.get("conditionId"),
+
+        "seller_type":
+            item.get("sellerType"),
+
+        "buying_format":
+            item.get("buyingFormat"),
+
+        "bid_count":
+            item.get("bidCount"),
+
+        "category_id":
+            str(item.get("categoryId"))
+            if item.get("categoryId") is not None
+            else None,
+
+        "listing_type":
+            item.get("listingType"),
+
+        "ended_at":
+            item.get("endedAt"),
+
+        "sold_price":
+            float(sold_price)
+            if sold_price
+            else None,
+
+        "sold_currency":
+            sold_currency,
+
+        "shipping_price":
+            float(item.get("shippingPrice"))
+            if item.get("shippingPrice")
+            else None,
+
+        "shipping_currency":
+            item.get("shippingCurrency"),
+
+        "shipping_type":
+            item.get("shippingType"),
+
+        "total_price":
+            float(item.get("totalPrice"))
+            if item.get("totalPrice")
+            else None,
+
+        "seller_username":
+            item.get("sellerUsername"),
+
+        "seller_positive_percent":
+            float(item.get("sellerPositivePercent"))
+            if item.get("sellerPositivePercent")
+            is not None
+            else None,
+
+        "seller_feedback_score":
+            item.get("sellerFeedbackScore"),
+
+        "item_location":
+            item.get("itemLocation"),
+
+        "scraped_at":
+            item.get("scrapedAt")
     }
 
 
@@ -473,58 +714,117 @@ def convert_listing(item):
 # ============================================================
 
 def insert_rows_to_db(rows):
+
     if not rows:
-        safe_print("No new rows to insert.")
+        safe_print(
+            "No new rows to insert."
+        )
+
         return 0, 0
 
     conn = get_connection()
+
     inserted = 0
     duplicates = 0
 
     try:
+
         cursor = conn.cursor()
 
         for r in rows:
+
             try:
+
                 cursor.execute(
                     """
                     INSERT INTO dbo.ace_ebay_sales
                     (
-                        title, sold_date, price, best_offer_accepted,
-                        database_created_at, database_updated_at,
-                        url, listing_id,
-                        thumbnail_url, full_res_thumbnail_url, epid,
-                        condition, condition_id, seller_type, buying_format,
-                        bid_count, category_id, listing_type,
-                        ended_at, sold_price, sold_currency,
-                        shipping_price, shipping_currency, shipping_type,
-                        total_price, seller_username, seller_positive_percent,
-                        seller_feedback_score, item_location, scraped_at
+                        title,
+                        sold_date,
+                        price,
+                        best_offer_accepted,
+                        database_created_at,
+                        database_updated_at,
+                        url,
+                        listing_id,
+                        thumbnail_url,
+                        full_res_thumbnail_url,
+                        epid,
+                        condition,
+                        condition_id,
+                        seller_type,
+                        buying_format,
+                        bid_count,
+                        category_id,
+                        listing_type,
+                        ended_at,
+                        sold_price,
+                        sold_currency,
+                        shipping_price,
+                        shipping_currency,
+                        shipping_type,
+                        total_price,
+                        seller_username,
+                        seller_positive_percent,
+                        seller_feedback_score,
+                        item_location,
+                        scraped_at
                     )
                     VALUES
                     (
                         ?, ?, ?, ?,
-                        SYSUTCDATETIME(), SYSUTCDATETIME(),
+                        SYSUTCDATETIME(),
+                        SYSUTCDATETIME(),
                         ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?,
                         ?, ?, ?,
                         ?, ?, ?, ?,
                         ?, ?, ?, ?, ?
                     )
                     """,
-                    r["title"], r["sold_date"], r["price"], r["best_offer_accepted"],
-                    r["url"], r["listing_id"],
-                    r["thumbnail_url"], r["full_res_thumbnail_url"], r["epid"],
-                    r["condition"], r["condition_id"], r["seller_type"], r["buying_format"],
-                    r["bid_count"], r["category_id"], r["listing_type"],
-                    r["ended_at"], r["sold_price"], r["sold_currency"],
-                    r["shipping_price"], r["shipping_currency"], r["shipping_type"],
-                    r["total_price"], r["seller_username"], r["seller_positive_percent"],
-                    r["seller_feedback_score"], r["item_location"], r["scraped_at"]
+
+                    r["title"],
+                    r["sold_date"],
+                    r["price"],
+                    r["best_offer_accepted"],
+
+                    r["url"],
+                    r["listing_id"],
+
+                    r["thumbnail_url"],
+                    r["full_res_thumbnail_url"],
+                    r["epid"],
+
+                    r["condition"],
+                    r["condition_id"],
+                    r["seller_type"],
+                    r["buying_format"],
+
+                    r["bid_count"],
+                    r["category_id"],
+                    r["listing_type"],
+
+                    r["ended_at"],
+                    r["sold_price"],
+                    r["sold_currency"],
+
+                    r["shipping_price"],
+                    r["shipping_currency"],
+                    r["shipping_type"],
+
+                    r["total_price"],
+                    r["seller_username"],
+                    r["seller_positive_percent"],
+                    r["seller_feedback_score"],
+                    r["item_location"],
+                    r["scraped_at"]
                 )
+
                 inserted += 1
 
             except pyodbc.IntegrityError:
+
                 duplicates += 1
 
         conn.commit()
@@ -539,65 +839,205 @@ def insert_rows_to_db(rows):
 # SCRAPE ALL SOLDCOMPS PAGES
 # ============================================================
 
-def scrape_all_pages(run_id, known_record, days_to_scrape):
+def scrape_all_pages(
+    run_id,
+    known_record,
+    days_to_scrape
+):
+
     new_listings_found = 0
     total_inserted = 0
     total_duplicates = 0
 
     page_number = 1
+
     pages_requested = 0
     api_requests = 0
     listings_returned = 0
 
     while True:
-        safe_print("\n========================================")
-        safe_print(f"SoldComps page {page_number}")
-        safe_print("========================================")
+
+        safe_print(
+            "\n========================================"
+        )
+
+        safe_print(
+            f"SoldComps page {page_number}"
+        )
+
+        safe_print(
+            "========================================"
+        )
 
         pages_requested += 1
         api_requests += 1
 
-        update_api_run(run_id, pages_requested=pages_requested, api_requests=api_requests)
+        update_api_run(
+            run_id,
+            pages_requested=pages_requested,
+            api_requests=api_requests
+        )
 
-        data = get_sold_listings(page_number, days_to_scrape)
+        data = get_sold_listings(
+            page_number,
+            days_to_scrape
+        )
 
         if isinstance(data, list):
+
             items = data
-            has_next_page = len(items) == COUNT_PER_PAGE
+
+            has_next_page = (
+                len(items) == COUNT_PER_PAGE
+            )
+
         else:
-            items = data.get("items", [])
-            has_next_page = data.get("hasNextPage", False)
+
+            items = data.get(
+                "items",
+                []
+            )
+
+            has_next_page = data.get(
+                "hasNextPage",
+                False
+            )
 
         listings_returned += len(items)
-        update_api_run(run_id, listings_returned=listings_returned)
 
-        safe_print(f"Received {len(items)} listings.")
+        update_api_run(
+            run_id,
+            listings_returned=listings_returned
+        )
+
+        safe_print(
+            f"Received {len(items)} listings."
+        )
 
         if not items:
-            safe_print("No listings returned.")
+
+            safe_print(
+                "No listings returned."
+            )
+
             break
 
         stop_reached = False
+
         page_rows = []
 
+        # Count OLD listings only on this page.
+        old_listings_on_page = 0
+
         for item in items:
+
             row = convert_listing(item)
 
-            if rows_match(row, known_record):
-                safe_print("\n*** LAST KNOWN RECORD REACHED ***")
-                safe_print("Stopping SoldComps pagination.")
+            # ------------------------------------------------
+            # NORMAL MODE
+            # ------------------------------------------------
+
+            if (
+                not BACKFILL_ENABLED
+                and rows_match(
+                    row,
+                    known_record
+                )
+            ):
+
+                safe_print(
+                    "\n*** LAST KNOWN RECORD REACHED ***"
+                )
+
+                safe_print(
+                    "Stopping SoldComps pagination."
+                )
+
                 stop_reached = True
+
                 break
 
+            # ------------------------------------------------
+            # BACKFILL MODE
+            # ------------------------------------------------
+
+            if BACKFILL_ENABLED:
+
+                row_sold_date = parse_sold_date(
+                    row.get(
+                        "sold_date",
+                        ""
+                    )
+                )
+
+                # Only count listings that we can
+                # definitely prove are before the
+                # backfill date.
+                if (
+                    row_sold_date is not None
+                    and
+                    row_sold_date < BACKFILL_START_DATE
+                ):
+
+                    old_listings_on_page += 1
+
+                    safe_print(
+                        f"Skipping old listing "
+                        f"({row_sold_date} < "
+                        f"{BACKFILL_START_DATE}) "
+                        f"[{old_listings_on_page}/"
+                        f"{BACKFILL_OLD_LISTINGS_STOP_THRESHOLD}]"
+                    )
+
+                    # Stop ONLY when we have seen
+                    # 20 old listings on THIS page.
+                    if (
+                        old_listings_on_page
+                        >=
+                        BACKFILL_OLD_LISTINGS_STOP_THRESHOLD
+                    ):
+
+                        safe_print(
+                            "\n*** BACKFILL STOP THRESHOLD REACHED ***"
+                        )
+
+                        safe_print(
+                            f"{old_listings_on_page} listings "
+                            f"on page {page_number} were before "
+                            f"{BACKFILL_START_DATE}."
+                        )
+
+                        safe_print(
+                            "Stopping SoldComps pagination."
+                        )
+
+                        stop_reached = True
+
+                        break
+
+                    continue
+
+            # Listing is valid for the backfill.
             page_rows.append(row)
 
-        # Insert page rows immediately
-        inserted, duplicates = insert_rows_to_db(page_rows)
+        # ----------------------------------------------------
+        # INSERT PAGE ROWS
+        # ----------------------------------------------------
 
-        safe_print(f"Inserted {inserted} rows, {duplicates} duplicates on page {page_number}")
+        inserted, duplicates = (
+            insert_rows_to_db(page_rows)
+        )
+
+        safe_print(
+            f"Inserted {inserted} rows, "
+            f"{duplicates} duplicates "
+            f"on page {page_number}"
+        )
 
         new_listings_found += inserted
+
         total_inserted += inserted
+
         total_duplicates += duplicates
 
         update_api_run(
@@ -607,15 +1047,35 @@ def scrape_all_pages(run_id, known_record, days_to_scrape):
             duplicates_skipped=total_duplicates
         )
 
+        # ----------------------------------------------------
+        # STOP CONDITIONS
+        # ----------------------------------------------------
+
         if stop_reached:
-            update_api_run(run_id, last_known_record_found=True)
+
+            if (
+                BACKFILL_ENABLED
+                and old_listings_on_page
+                >= BACKFILL_OLD_LISTINGS_STOP_THRESHOLD
+            ):
+
+                update_api_run(
+                    run_id,
+                    last_known_record_found=True
+                )
+
             break
 
         if not has_next_page:
-            safe_print("No more SoldComps pages.")
+
+            safe_print(
+                "No more SoldComps pages."
+            )
+
             break
 
         page_number += 1
+
         time.sleep(1)
 
     return (
@@ -633,13 +1093,24 @@ def scrape_all_pages(run_id, known_record, days_to_scrape):
 # ============================================================
 
 def run():
-    safe_print("\n========================================")
-    safe_print("ACE EBAY SALES - SOLDCOMPS")
-    safe_print("========================================\n")
+
+    safe_print(
+        "\n========================================"
+    )
+
+    safe_print(
+        "ACE EBAY SALES - SOLDCOMPS"
+    )
+
+    safe_print(
+        "========================================\n"
+    )
 
     if not SOLDCOMPS_API_KEY:
+
         raise RuntimeError(
-            "SOLDCOMPS_API_KEY environment variable has not been configured."
+            "SOLDCOMPS_API_KEY environment variable "
+            "has not been configured."
         )
 
     # --------------------------------------------------------
@@ -652,26 +1123,41 @@ def run():
     # LOAD LAST KNOWN SALE
     # --------------------------------------------------------
 
-    known_record = load_latest_record_from_db()
+    known_record = (
+        load_latest_record_from_db()
+    )
 
     # --------------------------------------------------------
     # CALCULATE DATE WINDOW
     # --------------------------------------------------------
 
     if known_record:
-        last_sold_date = parse_sold_date(known_record["sold_date"])
+
+        last_sold_date = parse_sold_date(
+            known_record["sold_date"]
+        )
+
     else:
+
         last_sold_date = None
 
-    days_to_scrape = calculate_days_to_scrape(last_sold_date)
+    days_to_scrape = (
+        calculate_days_to_scrape(
+            last_sold_date
+        )
+    )
 
     # --------------------------------------------------------
     # CREATE RUN RECORD
     # --------------------------------------------------------
 
-    run_id = create_api_run(known_record, days_to_scrape)
+    run_id = create_api_run(
+        known_record,
+        days_to_scrape
+    )
 
     try:
+
         # ----------------------------------------------------
         # CALL SOLDCOMPS
         # ----------------------------------------------------
@@ -683,7 +1169,11 @@ def run():
             listings_returned,
             total_inserted,
             total_duplicates
-        ) = scrape_all_pages(run_id, known_record, days_to_scrape)
+        ) = scrape_all_pages(
+            run_id,
+            known_record,
+            days_to_scrape
+        )
 
         # ----------------------------------------------------
         # MARK RUN COMPLETE
@@ -701,8 +1191,14 @@ def run():
             completed=True
         )
 
-        safe_print("\n========================================")
-        safe_print("Run completed successfully.")
+        safe_print(
+            "\n========================================"
+        )
+
+        safe_print(
+            "Run completed successfully."
+        )
+
         safe_print(
             f"Pages requested: {pages_requested}, "
             f"API requests: {api_requests}, "
@@ -711,13 +1207,28 @@ def run():
             f"Inserted: {total_inserted}, "
             f"Duplicates: {total_duplicates}"
         )
-        safe_print("========================================\n")
+
+        safe_print(
+            "========================================\n"
+        )
 
     except Exception as exc:
-        safe_print("\n========================================")
-        safe_print("Run failed with an error.")
-        safe_print(str(exc))
-        safe_print("========================================\n")
+
+        safe_print(
+            "\n========================================"
+        )
+
+        safe_print(
+            "Run failed with an error."
+        )
+
+        safe_print(
+            str(exc)
+        )
+
+        safe_print(
+            "========================================\n"
+        )
 
         update_api_run(
             run_id,
@@ -725,6 +1236,7 @@ def run():
             error_message=str(exc),
             completed=True
         )
+
         raise
 
 
