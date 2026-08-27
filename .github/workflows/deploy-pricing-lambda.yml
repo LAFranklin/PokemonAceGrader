@@ -73,6 +73,10 @@ jobs:
               --environment "Variables={SOLDCOMPS_SECRET_NAME=pokemon/soldcomps-api}"
           fi
 
+      - name: Wait for Lambda to become active
+        run: |
+          aws lambda wait function-active-v2 --function-name "$FUNCTION_NAME"
+
       - name: Deploy Lambda image
         run: |
           aws lambda update-function-code \
