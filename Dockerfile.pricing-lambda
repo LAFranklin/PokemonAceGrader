@@ -1,0 +1,18 @@
+FROM public.ecr.aws/lambda/python:3.12
+
+RUN dnf install -y gcc gcc-c++ make unixODBC-devel curl \
+    && curl -fsSL https://packages.microsoft.com/config/rhel/9/prod.repo \
+       -o /etc/yum.repos.d/mssql-release.repo \
+    && ACCEPT_EULA=Y dnf install -y msodbcsql18 \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+COPY lambda_requirements.txt ${LAMBDA_TASK_ROOT}/
+RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/lambda_requirements.txt \
+    --target ${LAMBDA_TASK_ROOT}
+
+COPY lambda_pricing_pipeline.py ${LAMBDA_TASK_ROOT}/
+COPY ebay_coldcomps_scrapper.py ${LAMBDA_TASK_ROOT}/
+COPY match_pokemon_to_price.py ${LAMBDA_TASK_ROOT}/
+
+CMD ["lambda_pricing_pipeline.lambda_handler"]
