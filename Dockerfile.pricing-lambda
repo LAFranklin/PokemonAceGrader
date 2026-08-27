@@ -1,6 +1,6 @@
 FROM public.ecr.aws/lambda/python:3.12
 
-RUN dnf install -y gcc gcc-c++ make unixODBC-devel curl \
+RUN dnf install -y gcc gcc-c++ make unixODBC-devel \
     && curl -fsSL https://packages.microsoft.com/config/rhel/9/prod.repo \
        -o /etc/yum.repos.d/mssql-release.repo \
     && ACCEPT_EULA=Y dnf install -y msodbcsql18 \
