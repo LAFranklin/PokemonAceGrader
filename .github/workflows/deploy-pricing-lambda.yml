@@ -55,6 +55,24 @@ jobs:
           docker push "$IMAGE_URI"
           echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
 
+      - name: Create Lambda if missing
+        env:
+          EXECUTION_ROLE_ARN: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            echo "Lambda $FUNCTION_NAME already exists"
+          else
+            echo "Creating Lambda $FUNCTION_NAME"
+            aws lambda create-function \
+              --function-name "$FUNCTION_NAME" \
+              --package-type Image \
+              --code ImageUri="$IMAGE_URI" \
+              --role "$EXECUTION_ROLE_ARN" \
+              --timeout 900 \
+              --memory-size 1024 \
+              --environment "Variables={SOLDCOMPS_SECRET_NAME=pokemon/soldcomps-api}"
+          fi
+
       - name: Deploy Lambda image
         run: |
           aws lambda update-function-code \
