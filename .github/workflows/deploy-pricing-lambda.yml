@@ -84,6 +84,10 @@ jobs:
             --image-uri "$IMAGE_URI" \
             --publish
 
+      - name: Wait for Lambda code update
+        run: |
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
       - name: Configure Lambda
         run: |
           aws lambda update-function-configuration \
@@ -92,7 +96,7 @@ jobs:
             --memory-size 1024 \
             --environment "Variables={SOLDCOMPS_SECRET_NAME=pokemon/soldcomps-api}"
 
-      - name: Wait for Lambda update
+      - name: Wait for Lambda configuration update
         run: |
           aws lambda wait function-updated --function-name "$FUNCTION_NAME"
 
