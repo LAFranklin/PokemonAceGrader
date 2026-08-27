@@ -1,0 +1,121 @@
+name: Deploy Pokemon ACE Pricing Lambda
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'lambda_pricing_pipeline.py'
+      - 'ebay_coldcomps_scrapper.py'
+      - 'match_pokemon_to_price.py'
+      - 'lambda_requirements.txt'
+      - '.github/workflows/deploy-pricing-lambda.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-2
+  FUNCTION_NAME: PokemonAcePricingPipeline
+  LAYER_NAME: PokemonAcePricingPyodbc
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
+
+      - name: Build Lambda dependencies
+        run: |
+          rm -rf build lambda.zip
+          mkdir -p build
+          python -m pip install --upgrade pip
+          pip install -r lambda_requirements.txt -t build
+
+          cp lambda_pricing_pipeline.py build/
+          cp ebay_coldcomps_scrapper.py build/
+          cp match_pokemon_to_price.py build/
+
+          cd build
+          zip -r ../lambda.zip .
+
+      - name: Build Linux pyodbc layer
+        run: |
+          rm -rf layer layer.zip
+          mkdir -p layer/python
+
+          docker run --rm \
+            -v "$PWD/layer:/out" \
+            public.ecr.aws/amazonlinux/amazonlinux:2023 \
+            bash -c '
+              set -e
+              dnf install -y python3.12 python3.12-pip gcc gcc-c++ make unixODBC-devel curl gnupg2
+              curl https://packages.microsoft.com/config/rhel/9/prod.repo > /etc/yum.repos.d/mssql-release.repo
+              ACCEPT_EULA=Y dnf install -y msodbcsql18
+              python3.12 -m pip install --upgrade pip
+              python3.12 -m pip install pyodbc -t /out/python
+              mkdir -p /out/lib64
+              cp /usr/lib64/libodbc.so* /out/lib64/ || true
+              cp /usr/lib64/libodbcinst.so* /out/lib64/ || true
+              find /opt/microsoft/msodbcsql18/lib64 -maxdepth 1 -type f -name "libmsodbcsql-*.so.*" -exec cp {} /out/lib64/ \\\;
+            '
+
+          cd layer
+          zip -r ../layer.zip .
+
+      - name: Publish pyodbc layer
+        id: layer
+        run: |
+          LAYER_ARN=$(aws lambda publish-layer-version \
+            --layer-name "$LAYER_NAME" \
+            --description "Linux pyodbc with Microsoft ODBC Driver 18 for SQL Server" \
+            --zip-file fileb://layer.zip \
+            --compatible-runtimes python3.12 \
+            --compatible-architectures x86_64 \
+            --query LayerVersionArn \
+            --output text)
+
+          echo "layer_arn=$LAYER_ARN" >> "$GITHUB_OUTPUT"
+          echo "Published $LAYER_ARN"
+
+      - name: Deploy Lambda code
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_NAME" \
+            --zip-file fileb://lambda.zip \
+            --publish
+
+      - name: Configure Lambda
+        run: |
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --runtime python3.12 \
+            --architectures x86_64 \
+            --timeout 900 \
+            --memory-size 1024 \
+            --environment "Variables={SOLDCOMPS_SECRET_NAME=pokemon/soldcomps-api,AWS_REGION=$AWS_REGION}" \
+            --layers "${{ steps.layer.outputs.layer_arn }}"
+
+      - name: Wait for Lambda update
+        run: |
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+      - name: Smoke test
+        run: |
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --invocation-type RequestResponse \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/lambda-response.json
+
+          cat /tmp/lambda-response.json
