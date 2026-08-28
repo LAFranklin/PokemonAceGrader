@@ -1,16 +1,8 @@
 """AWS Lambda entry point for the TCGdex downloader.
 
-The downloader is deliberately page-bounded.  Pass start_page and max_pages in
- the invocation event so we can measure Lambda throughput before adding automatic
+The downloader is deliberately page-bounded. Pass start_page and max_pages in
+the invocation event so we can measure Lambda throughput before adding automatic
 chaining/checkpointing.
-
-Expected Secrets Manager JSON:
-{
-  "sql_server": "...",
-  "sql_database": "...",
-  "sql_user": "...",
-  "sql_password": "..."
-}
 """
 
 import json
@@ -26,8 +18,13 @@ import requests
 BASE_API_URL = "https://api.tcgdex.net/v2/en/cards"
 REQUEST_DELAY = float(os.environ.get("TCGDEX_REQUEST_DELAY", "0.15"))
 ITEMS_PER_PAGE = int(os.environ.get("TCGDEX_ITEMS_PER_PAGE", "100"))
-DB_SECRET_NAME = os.environ.get("TCGDEX_DB_SECRET_NAME", "pokemon/database")
+DB_SECRET_NAME = os.environ.get(
+    "TCGDEX_DB_SECRET_NAME",
+    "rds!db-74390ece-2c7e-4537-8547-47f190ac8c2d",
+)
 DEFAULT_MAX_PAGES = int(os.environ.get("TCGDEX_MAX_PAGES", "5"))
+SQL_SERVER = "database-1.cdgee08us4is.eu-west-2.rds.amazonaws.com,1433"
+SQL_DATABASE = "Pokemon"
 
 MERGE_CARD_SQL = """
 MERGE pokemon_cards AS target
@@ -97,14 +94,11 @@ VALUES (?,?,?,?);
 
 
 def load_db_credentials():
-    client = boto3.client("secretsmanager")
+    client = boto3.client("secretsmanager", region_name="eu-west-2")
     response = client.get_secret_value(SecretId=DB_SECRET_NAME)
-    value = response.get("SecretString", "")
-    data = json.loads(value)
-    required = ("sql_server", "sql_database", "sql_user", "sql_password")
-    missing = [key for key in required if not data.get(key)]
-    if missing:
-        raise RuntimeError(f"Database secret is missing: {', '.join(missing)}")
+    data = json.loads(response.get("SecretString", "{}"))
+    if not data.get("username") or not data.get("password"):
+        raise RuntimeError("RDS secret does not contain username/password")
     return data
 
 
@@ -112,10 +106,10 @@ def get_connection():
     db = load_db_credentials()
     conn_str = (
         "DRIVER={ODBC Driver 18 for SQL Server};"
-        f"SERVER={db['sql_server']};"
-        f"DATABASE={db['sql_database']};"
-        f"UID={db['sql_user']};"
-        f"PWD={db['sql_password']};"
+        f"SERVER={SQL_SERVER};"
+        f"DATABASE={SQL_DATABASE};"
+        f"UID={db['username']};"
+        f"PWD={db['password']};"
         "Encrypt=yes;"
         "TrustServerCertificate=yes;"
     )
@@ -203,7 +197,6 @@ def process_page(session, cursor, conn, page):
         if REQUEST_DELAY:
             time.sleep(REQUEST_DELAY)
 
-    # One transaction per page. If the page fails, none of its database work is committed.
     conn.commit()
     print(f"Page {page} committed: {processed} cards")
     return processed
