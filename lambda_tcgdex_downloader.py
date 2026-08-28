@@ -1,8 +1,8 @@
 """AWS Lambda entry point for the TCGdex downloader.
 
-Processes a page-bounded chunk and automatically invokes itself with the next
-page until TCGdex has no more cards. The chunk size is intentionally conservative
-because a full run can take much longer than Lambda's maximum single invocation.
+Processes a page-bounded chunk and can automatically request the next chunk.
+The actual continuation is orchestrated by the deployment workflow/EventBridge
+rather than relying on the Lambda execution role having self-invoke permission.
 """
 
 import json
@@ -203,27 +203,6 @@ def process_page(session, cursor, conn, page):
     return processed
 
 
-def invoke_next_page(next_page):
-    if not AUTO_CHAIN:
-        return
-
-    client = boto3.client("lambda", region_name="eu-west-2")
-    function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
-    if not function_name:
-        raise RuntimeError("AWS_LAMBDA_FUNCTION_NAME is not available")
-
-    payload = {
-        "start_page": next_page,
-        "max_pages": MAX_PAGES_PER_INVOCATION,
-    }
-    print(f"Chaining next invocation: start_page={next_page}")
-    client.invoke(
-        FunctionName=function_name,
-        InvocationType="Event",
-        Payload=json.dumps(payload).encode("utf-8"),
-    )
-
-
 def lambda_handler(event, context):
     event = event or {}
     start_page = max(1, int(event.get("start_page", 1)))
@@ -241,7 +220,6 @@ def lambda_handler(event, context):
 
     try:
         for page in range(start_page, start_page + max_pages):
-            # Leave two minutes of headroom for database closeout and chaining.
             if context and context.get_remaining_time_in_millis() < 120_000:
                 print("Stopping with less than 2 minutes remaining")
                 break
@@ -260,16 +238,16 @@ def lambda_handler(event, context):
         cursor.close()
         conn.close()
 
-    if next_page is not None:
-        invoke_next_page(next_page)
-
+    # The Lambda execution role deliberately does not need lambda:InvokeFunction.
+    # The caller can use next_page to continue the crawl.
     result = {
-        "status": "complete" if complete else "chained" if next_page is not None else "paused",
+        "status": "complete" if complete else "paused",
         "start_page": start_page,
         "pages_processed": pages_processed,
         "cards_processed": cards_processed,
         "next_page": next_page,
         "auto_chain": AUTO_CHAIN,
+        "continuation": "invoke next_page manually or via an external scheduler" if next_page else None,
     }
     print(json.dumps(result))
     return {"statusCode": 200, "body": json.dumps(result)}
