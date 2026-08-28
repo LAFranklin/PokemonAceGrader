@@ -1,0 +1,106 @@
+name: Deploy TCGdex Downloader Lambda
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lambda-tcgdex-downloader
+    paths:
+      - 'lambda_tcgdex_downloader.py'
+      - 'lambda_requirements.txt'
+      - 'Dockerfile.tcgdex-lambda'
+      - '.github/workflows/deploy-tcgdex-lambda.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-2
+  FUNCTION_NAME: PokemonAceTcgdexDownloader
+  ECR_REPOSITORY: pokemon-ace-tcgdex-downloader
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
+
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 || \
+            aws ecr create-repository --repository-name "$ECR_REPOSITORY" >/dev/null
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Lambda image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build -f Dockerfile.tcgdex-lambda -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+          echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
+
+      - name: Create Lambda if missing
+        env:
+          EXECUTION_ROLE_ARN: ${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}
+        run: |
+          if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            echo "Lambda $FUNCTION_NAME already exists"
+          else
+            echo "Creating Lambda $FUNCTION_NAME"
+            aws lambda create-function \
+              --function-name "$FUNCTION_NAME" \
+              --package-type Image \
+              --code ImageUri="$IMAGE_URI" \
+              --role "$EXECUTION_ROLE_ARN" \
+              --timeout 900 \
+              --memory-size 1024 \
+              --environment "Variables={TCGDEX_DB_SECRET_NAME=pokemon/database,TCGDEX_REQUEST_DELAY=0.15,TCGDEX_ITEMS_PER_PAGE=100,TCGDEX_MAX_PAGES=5}"
+          fi
+
+      - name: Wait for Lambda to become active
+        run: aws lambda wait function-active-v2 --function-name "$FUNCTION_NAME"
+
+      - name: Deploy Lambda image
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_NAME" \
+            --image-uri "$IMAGE_URI" \
+            --publish
+
+      - name: Wait for Lambda code update
+        run: aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+      - name: Configure Lambda
+        run: |
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --timeout 900 \
+            --memory-size 1024 \
+            --environment "Variables={TCGDEX_DB_SECRET_NAME=pokemon/database,TCGDEX_REQUEST_DELAY=0.15,TCGDEX_ITEMS_PER_PAGE=100,TCGDEX_MAX_PAGES=5}"
+
+      - name: Wait for Lambda configuration update
+        run: aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+      - name: Smoke test
+        run: |
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --invocation-type RequestResponse \
+            --payload '{"start_page":1,"max_pages":1}' \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/lambda-response.json
+          cat /tmp/lambda-response.json
