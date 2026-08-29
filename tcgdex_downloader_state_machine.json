@@ -5,9 +5,6 @@
     "Run batch": {
       "Type": "Task",
       "Resource": "${TCGDEX_LAMBDA_ARN}",
-      "Parameters": {
-        "Payload.$": "$"
-      },
       "Retry": [
         {
           "ErrorEquals": [
@@ -21,18 +18,7 @@
           "BackoffRate": 2
         }
       ],
-      "Next": "Finished?"
-    },
-    "Finished?": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.statusCode",
-          "NumericEquals": 200,
-          "Next": "Read result"
-        }
-      ],
-      "Default": "Failed"
+      "Next": "Read result"
     },
     "Read result": {
       "Type": "Pass",
@@ -63,11 +49,6 @@
     },
     "Done": {
       "Type": "Succeed"
-    },
-    "Failed": {
-      "Type": "Fail",
-      "Error": "TcgdexLambdaFailed",
-      "Cause": "The TCGdex Lambda did not return HTTP status 200."
     }
   }
 }
