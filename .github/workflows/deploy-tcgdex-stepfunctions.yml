@@ -1,0 +1,82 @@
+name: Deploy TCGdex Step Functions
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lambda-tcgdex-downloader
+    paths:
+      - 'tcgdex_downloader_state_machine.json'
+      - '.github/workflows/deploy-tcgdex-stepfunctions.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: tcgdex-stepfunctions-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-2
+  STATE_MACHINE_NAME: PokemonAceTcgdexDownloader
+  STEP_FUNCTIONS_ROLE_NAME: PokemonAceTcgdexStepFunctionsRole
+  LAMBDA_FUNCTION_NAME: PokemonAceTcgdexDownloader
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
+
+      - name: Create or update Step Functions IAM role
+        run: |
+          ROLE_ARN="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/$STEP_FUNCTIONS_ROLE_NAME"
+          TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"states.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+          POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"arn:aws:lambda:'"$AWS_REGION"':'"$(aws sts get-caller-identity --query Account --output text)"':function:'"$LAMBDA_FUNCTION_NAME"'"}]}'
+
+          if aws iam get-role --role-name "$STEP_FUNCTIONS_ROLE_NAME" >/dev/null 2>&1; then
+            aws iam update-assume-role-policy --role-name "$STEP_FUNCTIONS_ROLE_NAME" --policy-document "$TRUST"
+          else
+            aws iam create-role --role-name "$STEP_FUNCTIONS_ROLE_NAME" --assume-role-policy-document "$TRUST"
+          fi
+
+          aws iam put-role-policy \
+            --role-name "$STEP_FUNCTIONS_ROLE_NAME" \
+            --policy-name InvokeTcgdexLambda \
+            --policy-document "$POLICY"
+
+          echo "STATE_MACHINE_ROLE_ARN=$ROLE_ARN" >> "$GITHUB_ENV"
+
+      - name: Create or update state machine
+        run: |
+          DEFINITION=$(cat tcgdex_downloader_state_machine.json)
+
+          if aws stepfunctions describe-state-machine --state-machine-arn "arn:aws:states:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):stateMachine:$STATE_MACHINE_NAME" >/dev/null 2>&1; then
+            ARN=$(aws stepfunctions describe-state-machine \
+              --state-machine-arn "arn:aws:states:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):stateMachine:$STATE_MACHINE_NAME" \
+              --query stateMachineArn --output text)
+            aws stepfunctions update-state-machine \
+              --state-machine-arn "$ARN" \
+              --role-arn "$STATE_MACHINE_ROLE_ARN" \
+              --definition "$DEFINITION"
+          else
+            aws stepfunctions create-state-machine \
+              --name "$STATE_MACHINE_NAME" \
+              --role-arn "$STATE_MACHINE_ROLE_ARN" \
+              --definition "$DEFINITION"
+          fi
+
+      - name: Show state machine
+        run: |
+          aws stepfunctions describe-state-machine \
+            --state-machine-arn "arn:aws:states:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):stateMachine:$STATE_MACHINE_NAME" \
+            --query '{name:name,status:status,arn:stateMachineArn}'
