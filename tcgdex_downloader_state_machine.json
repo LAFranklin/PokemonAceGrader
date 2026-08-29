@@ -1,0 +1,51 @@
+{
+  "Comment": "Run TCGdex downloader in 30-page Lambda batches until the API is exhausted.",
+  "StartAt": "Run batch",
+  "States": {
+    "Run batch": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${TCGDEX_LAMBDA_ARN}",
+        "Payload.$": "$"
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Finished?"
+    },
+    "Finished?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.status",
+          "StringEquals": "complete",
+          "Next": "Done"
+        }
+      ],
+      "Default": "Prepare next batch"
+    },
+    "Prepare next batch": {
+      "Type": "Pass",
+      "Parameters": {
+        "start_page.$": "$.next_page",
+        "max_pages": 30
+      },
+      "Next": "Run batch"
+    },
+    "Done": {
+      "Type": "Succeed"
+    }
+  }
+}
