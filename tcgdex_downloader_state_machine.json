@@ -4,12 +4,10 @@
   "States": {
     "Run batch": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "${TCGDEX_LAMBDA_ARN}",
       "Parameters": {
-        "FunctionName": "PokemonAceTcgdexDownloader",
         "Payload.$": "$"
       },
-      "OutputPath": "$.Payload",
       "Retry": [
         {
           "ErrorEquals": [
@@ -29,7 +27,26 @@
       "Type": "Choice",
       "Choices": [
         {
-          "Variable": "$.status",
+          "Variable": "$.statusCode",
+          "NumericEquals": 200,
+          "Next": "Read result"
+        }
+      ],
+      "Default": "Failed"
+    },
+    "Read result": {
+      "Type": "Pass",
+      "Parameters": {
+        "result.$": "States.StringToJson($.body)"
+      },
+      "ResultPath": "$.parsed",
+      "Next": "Finished download?"
+    },
+    "Finished download?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.parsed.result.status",
           "StringEquals": "complete",
           "Next": "Done"
         }
@@ -39,13 +56,18 @@
     "Prepare next batch": {
       "Type": "Pass",
       "Parameters": {
-        "start_page.$": "$.next_page",
+        "start_page.$": "$.parsed.result.next_page",
         "max_pages": 30
       },
       "Next": "Run batch"
     },
     "Done": {
       "Type": "Succeed"
+    },
+    "Failed": {
+      "Type": "Fail",
+      "Error": "TcgdexLambdaFailed",
+      "Cause": "The TCGdex Lambda did not return HTTP status 200."
     }
   }
 }
