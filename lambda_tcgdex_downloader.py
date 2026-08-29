@@ -54,7 +54,6 @@ def process_card(card, cursor):
     resistances = card.get("resistances", []) or []
     variants = card.get("variants", {}) or {}
     image = card.get("image", "")
-
     cursor.execute(MERGE_CARD_SQL, [
         card.get("id"), card.get("name", ""), card.get("localId", ""),
         card.get("category", ""), card.get("rarity", ""), s.get("id", ""),
@@ -67,12 +66,10 @@ def process_card(card, cursor):
         f"{image}/high.png" if image else "", json.dumps(variants),
         card.get("updated", ""),
     ])
-
     pricing = card.get("pricing", {}) or {}
     cm = pricing.get("cardmarket", {}) or {}
     tcg = pricing.get("tcgplayer", {}) or {}
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-
     if cm.get("updated"):
         cursor.execute(INSERT_CARDMARKET_SQL, [
             card["id"], now, cm.get("updated"), cm.get("avg1"), cm.get("avg7"),
@@ -85,7 +82,6 @@ def process_card(card, cursor):
             tcg.get("reverse", {}).get("marketPrice"),
             tcg.get("holofoil", {}).get("marketPrice"),
         ])
-
     if tcg.get("updated"):
         cursor.execute(INSERT_TCGPLAYER_SQL, [
             card["id"], now, tcg.get("updated"), json.dumps(tcg)
@@ -101,7 +97,6 @@ def process_page(session, cursor, conn, page):
     cards = response.json()
     if not cards:
         return 0
-
     count = 0
     print(f"Fetching page {page}")
     for stub in cards:
@@ -119,7 +114,6 @@ def process_page(session, cursor, conn, page):
             print(f"Detail error {card_id}: {exc}")
         if REQUEST_DELAY:
             time.sleep(REQUEST_DELAY)
-
     conn.commit()
     print(f"Page {page} committed: {count} cards")
     return count
@@ -130,7 +124,6 @@ def lambda_handler(event, context):
     start_page = max(1, int(event.get("start_page", 1)))
     max_pages = max(1, int(event.get("max_pages", MAX_PAGES_PER_INVOCATION)))
     print(f"Starting TCGdex Lambda: start_page={start_page}, max_pages={max_pages}")
-
     session = requests.Session()
     conn = get_connection()
     cursor = conn.cursor()
@@ -138,7 +131,6 @@ def lambda_handler(event, context):
     cards = 0
     next_page = start_page
     complete = False
-
     try:
         for page in range(start_page, start_page + max_pages):
             if context and context.get_remaining_time_in_millis() < 120000:
@@ -156,7 +148,6 @@ def lambda_handler(event, context):
     finally:
         cursor.close()
         conn.close()
-
     result = {
         "status": "complete" if complete else "paused",
         "start_page": start_page,
@@ -165,4 +156,4 @@ def lambda_handler(event, context):
         "next_page": next_page,
     }
     print(json.dumps(result))
-    return {"statusCode": 200, "body": json.dumps(result)}
+    return result
