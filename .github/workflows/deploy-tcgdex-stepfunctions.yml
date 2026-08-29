@@ -37,9 +37,16 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
 
+      - name: Build Step Functions definition
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          LAMBDA_ARN="arn:aws:lambda:$AWS_REGION:$ACCOUNT_ID:function:$LAMBDA_FUNCTION_NAME"
+          sed "s#\${TCGDEX_LAMBDA_ARN}#$LAMBDA_ARN#g" \
+            tcgdex_downloader_state_machine.json > /tmp/tcgdex-state-machine.json
+          cat /tmp/tcgdex-state-machine.json
+
       - name: Create or update state machine
         run: |
-          DEFINITION=$(cat tcgdex_downloader_state_machine.json)
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           STATE_MACHINE_ARN="arn:aws:states:$AWS_REGION:$ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME"
 
@@ -47,12 +54,12 @@ jobs:
             aws stepfunctions update-state-machine \
               --state-machine-arn "$STATE_MACHINE_ARN" \
               --role-arn "$STEP_FUNCTIONS_ROLE_ARN" \
-              --definition "$DEFINITION"
+              --definition file:///tmp/tcgdex-state-machine.json
           else
             aws stepfunctions create-state-machine \
               --name "$STATE_MACHINE_NAME" \
               --role-arn "$STEP_FUNCTIONS_ROLE_ARN" \
-              --definition "$DEFINITION"
+              --definition file:///tmp/tcgdex-state-machine.json
           fi
 
       - name: Show state machine
