@@ -20,7 +20,6 @@ concurrency:
 env:
   AWS_REGION: eu-west-2
   STATE_MACHINE_NAME: PokemonAceTcgdexDownloader
-  STEP_FUNCTIONS_ROLE_NAME: PokemonAceTcgdexStepFunctionsRole
   LAMBDA_FUNCTION_NAME: PokemonAceTcgdexDownloader
 
 jobs:
@@ -37,46 +36,36 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
 
-      - name: Create or update Step Functions IAM role
+      - name: Validate Step Functions role
+        env:
+          STEP_FUNCTIONS_ROLE_ARN: ${{ secrets.TCGDEX_STEP_FUNCTIONS_ROLE_ARN }}
         run: |
-          ROLE_ARN="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/$STEP_FUNCTIONS_ROLE_NAME"
-          TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"states.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-          POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"arn:aws:lambda:'"$AWS_REGION"':'"$(aws sts get-caller-identity --query Account --output text)"':function:'"$LAMBDA_FUNCTION_NAME"'"}]}'
-
-          if aws iam get-role --role-name "$STEP_FUNCTIONS_ROLE_NAME" >/dev/null 2>&1; then
-            aws iam update-assume-role-policy --role-name "$STEP_FUNCTIONS_ROLE_NAME" --policy-document "$TRUST"
-          else
-            aws iam create-role --role-name "$STEP_FUNCTIONS_ROLE_NAME" --assume-role-policy-document "$TRUST"
-          fi
-
-          aws iam put-role-policy \
-            --role-name "$STEP_FUNCTIONS_ROLE_NAME" \
-            --policy-name InvokeTcgdexLambda \
-            --policy-document "$POLICY"
-
-          echo "STATE_MACHINE_ROLE_ARN=$ROLE_ARN" >> "$GITHUB_ENV"
+          test -n "$STEP_FUNCTIONS_ROLE_ARN" || { echo "Missing TCGDEX_STEP_FUNCTIONS_ROLE_ARN GitHub secret"; exit 1; }
+          aws iam get-role --role-name "${STEP_FUNCTIONS_ROLE_ARN##*/}" >/dev/null
 
       - name: Create or update state machine
+        env:
+          STEP_FUNCTIONS_ROLE_ARN: ${{ secrets.TCGDEX_STEP_FUNCTIONS_ROLE_ARN }}
         run: |
           DEFINITION=$(cat tcgdex_downloader_state_machine.json)
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_MACHINE_ARN="arn:aws:states:$AWS_REGION:$ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME"
 
-          if aws stepfunctions describe-state-machine --state-machine-arn "arn:aws:states:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):stateMachine:$STATE_MACHINE_NAME" >/dev/null 2>&1; then
-            ARN=$(aws stepfunctions describe-state-machine \
-              --state-machine-arn "arn:aws:states:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):stateMachine:$STATE_MACHINE_NAME" \
-              --query stateMachineArn --output text)
+          if aws stepfunctions describe-state-machine --state-machine-arn "$STATE_MACHINE_ARN" >/dev/null 2>&1; then
             aws stepfunctions update-state-machine \
-              --state-machine-arn "$ARN" \
-              --role-arn "$STATE_MACHINE_ROLE_ARN" \
+              --state-machine-arn "$STATE_MACHINE_ARN" \
+              --role-arn "$STEP_FUNCTIONS_ROLE_ARN" \
               --definition "$DEFINITION"
           else
             aws stepfunctions create-state-machine \
               --name "$STATE_MACHINE_NAME" \
-              --role-arn "$STATE_MACHINE_ROLE_ARN" \
+              --role-arn "$STEP_FUNCTIONS_ROLE_ARN" \
               --definition "$DEFINITION"
           fi
 
       - name: Show state machine
         run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           aws stepfunctions describe-state-machine \
-            --state-machine-arn "arn:aws:states:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):stateMachine:$STATE_MACHINE_NAME" \
+            --state-machine-arn "arn:aws:states:$AWS_REGION:$ACCOUNT_ID:stateMachine:$STATE_MACHINE_NAME" \
             --query '{name:name,status:status,arn:stateMachineArn}'
