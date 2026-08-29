@@ -21,6 +21,7 @@ env:
   AWS_REGION: eu-west-2
   STATE_MACHINE_NAME: PokemonAceTcgdexDownloader
   LAMBDA_FUNCTION_NAME: PokemonAceTcgdexDownloader
+  STEP_FUNCTIONS_ROLE_ARN: arn:aws:iam::413467635720:role/PokemonAceTcgdexStepFunctionsRole
 
 jobs:
   deploy:
@@ -37,15 +38,10 @@ jobs:
           role-to-assume: ${{ secrets.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
 
       - name: Validate Step Functions role
-        env:
-          STEP_FUNCTIONS_ROLE_ARN: ${{ secrets.TCGDEX_STEP_FUNCTIONS_ROLE_ARN }}
         run: |
-          test -n "$STEP_FUNCTIONS_ROLE_ARN" || { echo "Missing TCGDEX_STEP_FUNCTIONS_ROLE_ARN GitHub secret"; exit 1; }
-          aws iam get-role --role-name "${STEP_FUNCTIONS_ROLE_ARN##*/}" >/dev/null
+          aws iam get-role --role-name PokemonAceTcgdexStepFunctionsRole >/dev/null
 
       - name: Create or update state machine
-        env:
-          STEP_FUNCTIONS_ROLE_ARN: ${{ secrets.TCGDEX_STEP_FUNCTIONS_ROLE_ARN }}
         run: |
           DEFINITION=$(cat tcgdex_downloader_state_machine.json)
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
